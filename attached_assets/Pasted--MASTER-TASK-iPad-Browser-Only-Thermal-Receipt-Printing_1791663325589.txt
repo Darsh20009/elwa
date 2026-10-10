@@ -1,0 +1,254 @@
+# MASTER TASK — iPad Browser-Only Thermal Receipt Printing
+
+## Objective
+
+Implement a reliable thermal receipt printing system for our existing web application.
+
+**Non-negotiable requirement:** Staff must use the existing website from Safari or Chrome on an iPad. They must NOT need to install a separate application on the iPad.
+
+The thermal printer is currently connected through USB. A local computer or print bridge may be used if necessary, but staff must continue operating entirely from the iPad browser.
+
+Do not claim that direct USB printing from iPad browsers is supported unless verified for the actual printer model and iPadOS version.
+
+## 1. Audit Before Implementation
+
+Inspect the existing repository and identify:
+
+- The invoice and receipt generation workflow.
+- Existing print buttons and print styles.
+- The invoice data source and authorization rules.
+- The printer manufacturer, model, connection type, paper width, and supported command language, if discoverable.
+- Existing infrastructure that could host a local print bridge.
+- Whether the application is hosted over HTTPS.
+- Existing receipt templates and Arabic/RTL support.
+
+Do not assume that the printer supports ESC/POS, AirPrint, Ethernet, or any particular driver.
+
+If the printer model cannot be identified from the repository, implement a configurable printer adapter and document the one piece of hardware information required before deployment.
+
+Do not rebuild the entire application.
+
+## 2. Required Architecture
+
+Implement a printer-independent architecture with these components:
+
+A. Web application running on the existing website.
+
+B. A shared receipt-rendering service that produces a consistent receipt from authoritative invoice data.
+
+C. A printer adapter interface supporting:
+- Browser print through window.print().
+- A local print bridge for USB-connected printers.
+- Additional adapters only when the actual hardware supports them.
+
+D. A print-job status mechanism.
+
+The web application must remain usable on iPad Safari and Chrome.
+
+## 3. Preferred Printing Workflow
+
+When an authorized staff member opens an invoice:
+
+1. Display the invoice preview.
+2. Display one prominent button: "Print Receipt".
+3. On a user click, verify the invoice and its print permissions.
+4. Select the configured printing method.
+5. If a paired local print bridge is available, submit the print job securely.
+6. Show one of these states:
+   - Preparing receipt
+   - Sending to printer
+   - Print job accepted
+   - Printer error
+   - Bridge unavailable
+7. Offer a retry action when appropriate.
+8. Offer browser-based printing as a fallback.
+
+Never report that a receipt physically printed just because an HTTP request succeeded. Distinguish between job accepted, job completed, and physical printing confirmed. Only report the states the hardware and bridge can actually verify.
+
+## 4. Local USB Print Bridge
+
+If direct iPad printing is not supported, implement a local print bridge that runs on an existing compatible computer in the clinic.
+
+The bridge must:
+
+- Communicate with the USB printer using a compatible operating-system driver or verified printer protocol.
+- Expose a narrowly scoped printing API.
+- Accept authorized print jobs from the web application.
+- Validate invoice identifiers and job contents.
+- Support connection health checks.
+- Return accurate job status.
+- Handle disconnections and retries safely.
+- Log diagnostic information without exposing sensitive patient or payment data.
+- Start automatically with the host operating system where supported.
+- Provide clear installation and troubleshooting instructions.
+
+Do not assume that the bridge can run directly inside the iPad browser.
+
+Do not require staff to install a companion app on the iPad.
+
+The local bridge may require one-time installation on the existing clinic computer. Clearly document this dependency.
+
+## 5. Secure Browser-to-Bridge Communication
+
+The production web application may use HTTPS, so explicitly address browser restrictions involving local-network requests, mixed content, certificates, and local-network permission prompts.
+
+Do not solve these restrictions by disabling browser security.
+
+Do not expose an unauthenticated print server to the local network or the public internet.
+
+Implement an appropriate secure pairing and authentication mechanism.
+
+Requirements:
+
+- Pairing initiated by an authorized administrator.
+- Short-lived pairing codes or tokens.
+- Rotatable bridge credentials.
+- Request origin validation as a supplementary control, not the sole authentication mechanism.
+- Rate limiting.
+- Strict request validation.
+- No unrestricted shell commands.
+- No arbitrary file paths or arbitrary print payload execution.
+- No public port forwarding.
+- No secrets stored in frontend code.
+- No credentials embedded in the repository.
+- Clear revocation and recovery procedures.
+
+Use a communication method compatible with the actual hosting environment and current iPadOS browser restrictions. If direct local-network access is blocked, document and implement a supported alternative rather than pretending it works.
+
+## 6. Receipt Rendering
+
+Create a professional thermal receipt template.
+
+Support the actual printer paper width, such as 58 mm or 80 mm, only after configuration or hardware verification.
+
+The receipt should include, where applicable:
+
+- Business name and logo.
+- Invoice number.
+- Date and time.
+- Customer information permitted for receipt display.
+- Items and quantities.
+- Prices, discounts, taxes, and total.
+- Payment method and payment status.
+- Applicable tax identification and legally required information.
+- A barcode or QR code only when required and supported.
+
+Support Arabic and English, correct RTL layout, appropriate font handling, and line wrapping.
+
+Do not invent tax details, payment status, or customer information.
+
+Use the existing authoritative invoice calculations. Never recalculate totals differently in the frontend.
+
+Provide a clean print stylesheet that hides navigation, sidebars, buttons, and unrelated content.
+
+## 7. Duplicate Prevention and Reliability
+
+Implement idempotent print-job handling.
+
+- Generate a unique job identifier.
+- Prevent accidental duplicate submissions caused by repeated clicks.
+- Allow an explicit reprint when authorized.
+- Mark reprints clearly in logs.
+- Do not create a second invoice when retrying a print job.
+- Do not mark invoices as paid merely because they were printed.
+- Preserve invoice records and financial integrity.
+- Do not automatically retry indefinitely.
+
+A printer failure must never corrupt an invoice or payment record.
+
+## 8. Browser Fallback
+
+If the local bridge is unavailable:
+
+- Keep the invoice accessible.
+- Show a clear explanation.
+- Offer "Print using browser".
+- Use window.print() only following a user action.
+- Explain that the user may need to select a compatible printer through iPadOS printing options.
+
+Do not claim that browser printing guarantees silent thermal printing.
+
+Do not show a success message until the corresponding operation is actually confirmed.
+
+## 9. Printer Configuration
+
+Add a minimal, permission-protected printer settings page in the existing application.
+
+Allow authorized administrators to configure:
+
+- Printer name.
+- Manufacturer and model.
+- Paper width.
+- Printing adapter.
+- Bridge pairing and connection status.
+- Test print.
+- Last successful job, if available.
+- Troubleshooting diagnostics.
+
+Do not expose these settings to ordinary staff unless authorized.
+
+Keep the staff workflow simple: open invoice, press Print Receipt, receive an accurate result.
+
+## 10. Testing and Acceptance
+
+Test the implementation against these scenarios:
+
+1. Open the website in iPad Safari.
+2. Open the website in iPad Chrome.
+3. Print a valid invoice using browser printing.
+4. Print through the local USB bridge.
+5. Test Arabic and English receipts.
+6. Test the configured paper width.
+7. Disconnect the bridge.
+8. Disconnect the printer.
+9. Retry a failed job.
+10. Double-tap the print button.
+11. Reprint an existing invoice.
+12. Attempt unauthorized printing.
+13. Attempt to access another customer's invoice.
+14. Verify that printing never changes payment status.
+15. Verify that no duplicate invoice is created.
+16. Test the production HTTPS environment and actual local-network permissions.
+17. Confirm that staff do not need an iPad application.
+18. Restart the bridge host and verify recovery.
+19. Test that reported job status matches what can actually be verified.
+20. Test the complete workflow on the real printer before declaring production readiness.
+
+If physical hardware is unavailable, clearly mark hardware tests as NOT VERIFIED. Do not simulate them and report success.
+
+## 11. Implementation Rules
+
+- Inspect and reuse the existing codebase.
+- Keep the existing application architecture and database.
+- Avoid unnecessary database migrations.
+- Do not add paid printing services unless explicitly approved.
+- Do not create a new application for iPad.
+- Do not use unsupported browser APIs.
+- Do not bypass browser security.
+- Do not break existing invoices or payments.
+- Do not stop at creating UI components.
+- Run relevant tests, type checks, lint checks, and production build.
+- Inspect the real UI on a narrow mobile viewport.
+- Fix implementation errors instead of merely documenting them.
+
+## 12. Final Report
+
+Report:
+
+1. What printing methods are supported.
+2. Whether the actual printer model was verified.
+3. Whether a local computer or bridge is required.
+4. Whether iPad Safari and Chrome were tested.
+5. Whether Arabic and paper width were verified.
+6. How to install and pair the bridge, if required.
+7. How staff print a receipt.
+8. What happens when the printer disconnects.
+9. Test results and remaining blockers.
+
+Final status must be one of:
+
+- VERIFIED ON REAL HARDWARE
+- IMPLEMENTED — HARDWARE VERIFICATION REQUIRED
+- BLOCKED — HARDWARE OR BROWSER LIMITATION
+
+Never claim that printing works until it has been verified using the real iPad, actual printer, and intended production environment.
