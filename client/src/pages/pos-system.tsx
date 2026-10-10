@@ -65,7 +65,9 @@ import { Label } from "@/components/ui/label";
 import { LoadingState } from "@/components/ui/loading-state";
 import { EmptyState } from "@/components/ui/empty-state";
 import DrinkCustomizationDialog, { type DrinkCustomization } from "@/components/drink-customization-dialog";
-import PrinterSettingsPanel from "@/components/printer-settings-panel";
+import UsbBridgeSettings from "@/components/usb-bridge-settings";
+import SecureReceiptPrint from "@/components/secure-receipt-print";
+import { useReceiptPrintConfig } from "@/hooks/use-receipt-print";
 import { SoundSettingsPanel } from "@/components/sound-settings-panel";
 import { loadPrinterSettings, savePrinterSettings } from "@/lib/thermal-printer";
 import RefundDialog from "@/components/refund-dialog";
@@ -112,6 +114,9 @@ export default function PosSystem() {
   );
   // Active branch: admin/owner uses selected, others use their assigned branch
   const activeBranchId = isAdminOwner ? posBranchId : (employee?.branchId || null);
+  const receiptPrintConfig = useReceiptPrintConfig(activeBranchId?.toString());
+  // Fail closed while config loads: USB bridge orders must not enter legacy printing.
+  const legacyPrintAllowed = receiptPrintConfig.data?.adapter === "browser";
   const [showBranchSelector, setShowBranchSelector] = useState(false);
 
   const { data: allBranches = [] } = useQuery<any[]>({
@@ -289,7 +294,7 @@ export default function PosSystem() {
         }),
       });
       const printerSettings = loadPrinterSettings();
-      if (printerSettings.autoPrint && order?.items?.length > 0) {
+      if (legacyPrintAllowed && printerSettings.autoPrint && order?.items?.length > 0) {
         const onlineOrderType = order.orderType || 'online';
         const onlineOrderTypeName =
           onlineOrderType === 'dine_in'    || onlineOrderType === 'dine-in'    ? 'محلي'   :
@@ -357,7 +362,7 @@ export default function PosSystem() {
     });
     // Auto-print kitchen preparation ticket
     const printerSettings = loadPrinterSettings();
-    if (printerSettings.autoPrint && order?.items?.length > 0) {
+    if (legacyPrintAllowed && printerSettings.autoPrint && order?.items?.length > 0) {
       import('@/lib/print-utils').then(({ printTaxInvoice }) => {
         printTaxInvoice({
           orderNumber: String(order.orderNumber || order.dailyNumber || ''),
@@ -488,40 +493,7 @@ export default function PosSystem() {
     return () => clearInterval(interval);
   }, [showQuickPrintBar]);
 
-  // Auto-close receipt dialog after 12 seconds with countdown
-  useEffect(() => {
-    if (!showReceiptDialog) { setReceiptCountdown(0); return; }
-    setReceiptCountdown(12);
-    const interval = setInterval(() => {
-      setReceiptCountdown(prev => {
-        if (prev <= 0) { clearInterval(interval); return 0; }
-        if (prev <= 1) { clearInterval(interval); setShowReceiptDialog(false); return 0; }
-        return prev - 1;
-      });
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [showReceiptDialog]);
-
-  // Auto-generate new-design receipt HTML whenever an order completes
-  useEffect(() => {
-    if (!lastOrder || (!showReceiptDialog && !showQuickPrintBar)) return;
-    setReceiptPreviewHtml('');
-    const previewData = {
-      orderNumber: lastOrder.orderNumber,
-      customerName: lastOrder.customerName,
-      customerPhone: lastOrder.customerPhone,
-      items: lastOrder.items,
-      subtotal: String(lastOrder.subtotal),
-      total: String(lastOrder.total),
-      paymentMethod: PAYMENT_METHOD_LABELS[lastOrder.paymentMethod] || lastOrder.paymentMethod,
-      employeeName: lastOrder.employeeName,
-      tableNumber: lastOrder.tableNumber,
-      orderType: lastOrder.orderType,
-      date: lastOrder.date,
-      splitPayment: lastOrder.splitPayment,
-    };
-    buildReceiptPreviewHtml(previewData).then(html => setReceiptPreviewHtml(html)).catch(() => {});
-  }, [lastOrder, showReceiptDialog]);
+  // Receipt preview and printing are user-driven and must not auto-close mid-job.
 
   useEffect(() => {
     const is9Digit = customerPhone.length === 9 && customerPhone.startsWith('5');
@@ -1573,7 +1545,7 @@ export default function PosSystem() {
         setLastOrder(offlineReceipt);
 
         // Auto-print offline receipt if enabled
-        if (autoPrint) {
+        if (legacyPrintAllowed && autoPrint) {
           const printSnapshot = {
             orderNumber: offlineOrderNum,
             customerName,
@@ -1660,6 +1632,9 @@ export default function PosSystem() {
       // .agents/memory/pos-html2canvas-iframe-shrink.md for details.
 
       setLastOrder({
+        _id: result._id || result.id,
+        id: result._id || result.id,
+        branchId: activeBranchId,
         orderNumber: orderNumForPrint,
         date: new Date().toISOString(),
         items: orderItems.map(item => ({
@@ -1684,7 +1659,7 @@ export default function PosSystem() {
         notes: orderNote || undefined,
       });
       // ✅ Defer print to avoid blocking the UI thread after checkout
-      if (autoPrint) {
+      if (legacyPrintAllowed && autoPrint) {
         const printSnapshot = {
           orderNumber: result.orderNumber || result.dailyNumber || result._id?.slice(-4) || '—',
           customerName,
@@ -1805,42 +1780,7 @@ export default function PosSystem() {
     };
   }, [receiptPreviewHtml, showReceiptDialog]);
 
-  useEffect(() => {
-    // Android: never create a staged iframe — any iframe in the DOM causes
-    // Android Chrome/WebView to recalculate the viewport to the iframe's
-    // narrow paper width, shrinking the entire POS UI.
-    if (isAndroidDevice) return;
-    if (!showReceiptDialog || !receiptPreviewHtml) return;
-    if (stagedPrintIframeRef.current) return;
-
-    const iframe = document.createElement('iframe');
-    iframe.setAttribute('aria-hidden', 'true');
-    iframe.style.cssText =
-      'position:fixed;top:-9999px;left:-9999px;width:302px;height:1px;border:none;opacity:0;pointer-events:none;';
-    document.body.appendChild(iframe);
-    iframe.addEventListener('load', () => { stagedPrintReadyRef.current = true; });
-    const doc = iframe.contentDocument || iframe.contentWindow?.document;
-    if (!doc) {
-      try { iframe.remove(); } catch {}
-      return;
-    }
-    try {
-      doc.open();
-      doc.write(receiptPreviewHtml);
-      doc.close();
-      stagedPrintIframeRef.current = iframe;
-      if (doc.readyState === 'complete') {
-        stagedPrintReadyRef.current = true;
-      } else {
-        doc.addEventListener('readystatechange', () => {
-          if (doc.readyState === 'complete') stagedPrintReadyRef.current = true;
-        });
-      }
-    } catch (err) {
-      console.warn('[POS] receipt staging failed:', err);
-      try { iframe.remove(); } catch {}
-    }
-  }, [showReceiptDialog, receiptPreviewHtml]);
+  // SecureReceiptPrint stages only server-provided HTML in a sandboxed iframe.
 
   // Helper: fast-path print only when staged iframe is truly ready & populated.
   // Android always returns false — we use the no-iframe path (printTaxInvoice).
@@ -4049,151 +3989,29 @@ export default function PosSystem() {
         </Dialog>
 
         <Dialog open={showReceiptDialog} onOpenChange={setShowReceiptDialog}>
-          <DialogContent className="max-w-sm max-h-[94vh] p-0 overflow-hidden flex flex-col" dir={dir}>
+          <DialogContent className="max-w-sm max-h-[94dvh] p-0 overflow-y-auto flex flex-col" dir={dir}>
             <DialogHeader className="px-4 pt-3 pb-2 border-b shrink-0">
               <DialogTitle className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
                   <Receipt className="w-5 h-5 text-primary" />
                   {t('pos.receipt_title')}
                 </div>
-                {receiptCountdown > 0 && (
-                  <span className="text-xs font-bold text-muted-foreground bg-muted px-2 py-0.5 rounded-full tabular-nums">
-                    {receiptCountdown}s
-                  </span>
-                )}
               </DialogTitle>
             </DialogHeader>
 
             {lastOrder && (
-              <div className="flex flex-col flex-1 overflow-hidden">
-                {/* ── Offline warning ── */}
-                {lastOrder.isOffline && (
-                  <div className="flex items-center gap-2 bg-amber-50 dark:bg-amber-950/40 border-b border-amber-300 dark:border-amber-700 px-3 py-2 shrink-0">
-                    <span className="text-amber-600 dark:text-amber-400">📶</span>
-                    <div className="text-right">
-                      <p className="text-xs font-bold text-amber-700 dark:text-amber-400">
-                        {i18n.language === 'ar' ? 'طلب محفوظ بدون إنترنت' : 'Saved Offline'}
-                      </p>
-                      <p className="text-xs text-amber-600 dark:text-amber-500">
-                        {i18n.language === 'ar' ? 'سيُرسل تلقائياً عند استعادة الاتصال' : 'Will sync when back online'}
-                      </p>
-                    </div>
-                  </div>
-                )}
-
-                {/* ── Receipt preview ── */}
-                {/* Android: NO iframe — any iframe in DOM shrinks entire viewport on WebView */}
-                <div className="flex-1 overflow-y-auto bg-[#e0ddd8]" data-testid="text-receipt-order-number">
-                  {isAndroidDevice ? (
-                    /* Android: show a simple order summary card — no iframe */
-                    <div className="flex flex-col items-center justify-center gap-4 py-8 px-4 text-center" dir="rtl">
-                      <CheckCircle className="w-12 h-12 text-green-500" />
-                      <div>
-                        <p className="text-lg font-bold text-foreground">{lastOrder?.orderNumber}</p>
-                        <p className="text-sm text-muted-foreground mt-1">
-                          {tc('اضغط زر الطباعة لطباعة الفاتورة', 'Tap the print button to print the receipt')}
-                        </p>
-                      </div>
-                      {lastOrder && (
-                        <div className="w-full bg-background rounded-xl border border-border p-4 text-right space-y-2">
-                          {lastOrder.items?.slice(0, 5).map((item: any, i: number) => (
-                            <div key={i} className="flex justify-between text-sm">
-                              <span className="text-muted-foreground">{item.quantity}×</span>
-                              <span className="flex-1 text-right mr-2">{item.coffeeItem?.nameAr || item.name}</span>
-                            </div>
-                          ))}
-                          {(lastOrder.items?.length ?? 0) > 5 && (
-                            <p className="text-xs text-muted-foreground text-center">+{lastOrder.items.length - 5} {tc('منتجات أخرى', 'more items')}</p>
-                          )}
-                          <div className="border-t border-border pt-2 flex justify-between font-bold text-base">
-                            <span>{tc('الإجمالي', 'Total')}</span>
-                            <span>{Number(lastOrder.total || 0).toFixed(2)} {tc('ر.س', 'SAR')}</span>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  ) : receiptPreviewHtml ? (
-                    <ShadowHtml
-                      html={receiptPreviewHtml}
-                      className="w-full block"
-                      style={{ height: '580px', minHeight: '400px', overflow: 'auto' }}
-                    />
-                  ) : (
-                    <div className="flex flex-col items-center justify-center h-48 gap-3 text-muted-foreground">
-                      <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-                      <span className="text-sm">{tc('جاري تحضير الفاتورة…', 'Preparing receipt…')}</span>
-                    </div>
-                  )}
-                </div>
-
-                {/* ── Print error banner ── */}
-                {lastPrintFailed && (
-                  <div className="flex items-start gap-2 bg-red-50 dark:bg-red-950/30 border-t border-red-200 dark:border-red-800 px-3 py-2 shrink-0 text-right">
-                    <span className="text-lg">⚠️</span>
-                    <div className="flex-1 text-xs text-red-700 dark:text-red-400">
-                      <p className="font-bold mb-0.5">لم تتم الطباعة</p>
-                      <p>افتح إعدادات الطابعة ← اختر الطابعة (USB) ← ثم اضغط "طباعة" أدناه</p>
-                    </div>
-                  </div>
-                )}
-
-                {/* ── Action buttons (5-action panel) ── */}
-                <div className="flex flex-col gap-2 p-3 border-t bg-background shrink-0">
+              <div className="p-4 space-y-3">
+                <SecureReceiptPrint key={lastOrder._id || lastOrder.id || "offline"} orderId={lastOrder._id || lastOrder.id} offline={!!lastOrder.isOffline} />
+                <div className="flex flex-col gap-2 pt-3 border-t">
                   <Button
-                    className="w-full gap-2 h-11 text-base font-bold"
+                    variant="outline"
+                    className="w-full gap-2 h-11 font-bold"
                     onClick={() => { setShowReceiptDialog(false); }}
                     data-testid="button-new-order"
                   >
                     <Plus className="w-5 h-5" />
                     {t('pos.new_order_btn')}
-                    {receiptCountdown > 0 && (
-                      <span className="mr-1 text-xs opacity-70">({receiptCountdown})</span>
-                    )}
                   </Button>
-
-                  {/* Row 1: full-width preview */}
-                  <Button
-                    variant="secondary"
-                    className="w-full gap-2"
-                    onClick={handlePreviewBoth}
-                    data-testid="button-preview-receipt"
-                  >
-                    <Receipt className="w-4 h-4" />
-                    {tc('معاينة الفواتير', 'Preview Invoices')}
-                  </Button>
-
-                  {/* Row 2: customer + kitchen */}
-                  <div className="flex gap-2">
-                    <Button
-                      variant="outline"
-                      className={`flex-1 gap-2 ${lastPrintFailed ? 'border-red-400 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30' : 'border-blue-300 text-blue-700 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-950/30'}`}
-                      onClick={() => { setLastPrintFailed(false); setReceiptCountdown(0); handlePrintCustomerOnly(); }}
-                      data-testid="button-print-receipt"
-                    >
-                      <Printer className="w-4 h-4" />
-                      {lastPrintFailed ? tc('إعادة الطباعة', 'Retry') : tc('فاتورة العميل', 'Customer')}
-                    </Button>
-                    <Button
-                      variant="outline"
-                      className="flex-1 gap-2 border-amber-300 text-amber-700 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-950/30"
-                      onClick={handlePrintKitchenOnly}
-                      data-testid="button-print-kitchen"
-                    >
-                      <Printer className="w-4 h-4" />
-                      {tc('طلب المطبخ', 'Kitchen')}
-                    </Button>
-                  </div>
-
-                  {/* Row 3: print both + edit */}
-                  <div className="flex gap-2">
-                    <Button
-                      className="flex-1 gap-2 bg-slate-900 hover:bg-black text-white"
-                      onClick={handlePrintBoth}
-                      data-testid="button-print-both"
-                    >
-                      <Printer className="w-4 h-4" />
-                      {tc('طباعة الكل', 'Print Both')}
-                    </Button>
                     <Button
                       variant="outline"
                       className="flex-1 gap-2 border-rose-300 text-rose-700 dark:text-rose-300 hover:bg-rose-50 dark:hover:bg-rose-950/30"
@@ -4203,7 +4021,6 @@ export default function PosSystem() {
                       <RotateCcw className="w-4 h-4" />
                       {tc('تعديل الطلب', 'Edit Order')}
                     </Button>
-                  </div>
                 </div>
               </div>
             )}
@@ -4259,7 +4076,7 @@ export default function PosSystem() {
             <div className="flex flex-col gap-2">
               <Button
                 className={`w-full gap-2 h-11 text-sm font-bold ${lastPrintFailed ? 'bg-red-600 hover:bg-red-700' : 'bg-primary hover:bg-primary/90'}`}
-                onClick={() => { setLastPrintFailed(false); setQuickPrintCountdown(0); handlePrintCustomerOnly(); }}
+                onClick={() => { setShowQuickPrintBar(false); setShowReceiptDialog(true); }}
                 data-testid="button-qb-print-customer"
               >
                 <Printer className="w-4 h-4" />
@@ -4715,7 +4532,7 @@ export default function PosSystem() {
                 {tc("إعدادات الطابعة", "Printer Settings")}
               </DialogTitle>
             </DialogHeader>
-            <PrinterSettingsPanel />
+            <UsbBridgeSettings key={activeBranchId} branchId={activeBranchId?.toString()} />
           </DialogContent>
         </Dialog>
 

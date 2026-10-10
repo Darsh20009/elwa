@@ -51,12 +51,14 @@ async function throwIfResNotOk(res: Response) {
  if (!res.ok) {
  const text = (await res.text()) || res.statusText;
  let errorMessage = text;
+ let body: unknown;
  try {
  const json = JSON.parse(text);
+ body = json;
  errorMessage = json.error || json.message || text;
  } catch {
  }
- throw new Error(errorMessage);
+ throw Object.assign(new Error(errorMessage), { status: res.status, body });
  }
 }
 

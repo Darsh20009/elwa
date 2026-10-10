@@ -1,5 +1,6 @@
 const TENANT_ID = process.env.TENANT_ID;
 import crypto from "crypto";
+import receiptPrintRouter from "./receipt-print/routes";
 import mongoose from "mongoose";
 import type { Express } from "express";
 import { createServer, type Server } from "http";
@@ -954,6 +955,7 @@ async function logPayment(data: {
 }
 
 export async function registerRoutes(app: Express): Promise<Server> {
+  app.use("/api/receipt-print", receiptPrintRouter);
   registerObjectStorageRoutes(app);
 
   // ── Visitor tracking middleware ──────────────────────────────────────────
