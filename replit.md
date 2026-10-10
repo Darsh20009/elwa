@@ -1,19 +1,45 @@
-# Running this project on Replit
+# [Project name]
 
-## Current preview
+_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
 
-The **Start application** workflow runs the Vite frontend on port 5000. This makes the interface available for preview, but it does not run the Express API or connect to a database. Sign-in, orders, and other database-backed features are unavailable in this mode.
+## Run & Operate
 
-## Full application
+- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
+- `pnpm run typecheck` — full typecheck across all packages
+- `pnpm run build` — typecheck + build all packages
+- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
+- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
+- Required env: `DATABASE_URL` — Postgres connection string
 
-The full development server is started with `npm run dev`. Before switching the workflow to that command, configure these values for the actual customer:
+## Stack
 
-- `MONGODB_URI`: connection string for that customer's own MongoDB database. The server rejects database names containing `qirox`.
-- `MONGODB_DATABASE`: set this to the dedicated database name if `MONGODB_URI` has no database path; use `elwa` for the current connection. Do not use a name containing `qirox`.
-- `TENANT_ID`: the assigned tenant identifier.
-- `PROJECT_PLAN_TIER`: `lite`, `pro`, or `infinity`.
-- `BUSINESS_CONFIG_JSON`: valid JSON with `businessName` and a six-digit hexadecimal `primaryColor` for local `npm run dev`. Use verified legal details; the production build requires an official `commercialRegNumber`. Never use placeholders for legal or tax identifiers.
-- `BOOTSTRAP_ADMIN_PASSWORD`: at least 6 characters for the initial owner account. This shorter minimum is weaker; prefer a longer password when possible.
-- `SESSION_SECRET`: at least 32 characters; this Repl already has this secret configured.
+- pnpm workspaces, Node.js 24, TypeScript 5.9
+- API: Express 5
+- DB: PostgreSQL + Drizzle ORM
+- Validation: Zod (`zod/v4`), `drizzle-zod`
+- API codegen: Orval (from OpenAPI spec)
+- Build: esbuild (CJS bundle)
 
-Keep database credentials and passwords in Replit Secrets, not in source files or chat. Do not use placeholder tenant or business values for a real deployment.
+## Where things live
+
+_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+
+## Architecture decisions
+
+_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+
+## Product
+
+_Describe the high-level user-facing capabilities of this app once they exist._
+
+## User preferences
+
+_Populate as you build — explicit user instructions worth remembering across sessions._
+
+## Gotchas
+
+_Populate as you build — sharp edges, "always run X before Y" rules._
+
+## Pointers
+
+- See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details

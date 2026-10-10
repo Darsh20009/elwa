@@ -1,0 +1,49 @@
+modules = ["nodejs-20", "web", "python-base-3.13"]
+
+[nix]
+channel = "stable-25_05"
+
+[agent]
+expertMode = true
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Start application"
+
+[[workflows.workflow]]
+name = "Start application"
+author = "agent"
+
+[workflows.workflow.metadata]
+outputType = "webview"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "npm run dev"
+waitForPort = 5000
+
+[[ports]]
+localPort = 5000
+externalPort = 80
+
+[[ports]]
+localPort = 23636
+externalPort = 3000
+
+[userenv]
+
+[userenv.shared]
+BUSINESS_CONFIG_JSON = "{\"businessName\":\"إلوة للقهوة المختصة\",\"businessNameEn\":\"Elwa Specialty Coffee\",\"commercialRegNumber\":\"\",\"taxNumber\":\"\",\"logoUrl\":\"/tenant-logo.jpg\",\"primaryColor\":\"#2D9B6E\",\"customerWhatsappRegistration\":true}"
+MONGODB_DATABASE = "elwa"
+PROJECT_PLAN_TIER = "lite"
+TENANT_ID = "elwa-specialty-coffee"
+QIROX_PLATFORM_URL = "https://qiroxstudio.online/api/v1/projects/6abe90906f3a125e9cee02f9/whatsapp"
+QIROX_WHATSAPP_API_PATH = "qrx_project_whatsapp_41f10e72a0da0b052cf59fd715e1d3097b7b88fe032462a522e9fada82c7f7c4"
