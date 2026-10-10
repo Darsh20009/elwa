@@ -1,0 +1,2 @@
+- [Migration preservation](migration-preservation.md) — preserve MongoDB and legacy API behavior; avoid converting the large existing app to PostgreSQL or generated hooks.
+- [Artifact registration failures](artifact-registration.md) — registration may fail while scanning dependency paths even when those paths exist in the workspace.

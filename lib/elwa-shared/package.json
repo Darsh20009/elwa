@@ -1,0 +1,11 @@
+{
+  "name": "@workspace/elwa-shared",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "mongoose": "^8.24.1",
+    "nanoid": "^5.1.16",
+    "zod": "^3.25.76"
+  }
+}
