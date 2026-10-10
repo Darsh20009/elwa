@@ -551,7 +551,8 @@ function App() {
       prefetch("/api/menu-categories"),
       prefetch("/api/product-addons"),
       prefetch("/api/custom-banners"),
-      prefetch("/api/payment-methods"),
+      // Payment screens fetch their own methods; the public menu must not
+      // prefetch this plan-restricted endpoint for every visitor.
       prefetch("/api/public/loyalty-settings"),
     ]);
   }, []);
