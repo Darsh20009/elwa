@@ -1,0 +1,33 @@
+services:
+  - type: web
+    name: elwa
+    runtime: node
+    plan: free
+    region: ohio
+    buildCommand: bash scripts/render-build.sh
+    startCommand: npm start
+    healthCheckPath: /healthz
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: TZ
+        value: Asia/Riyadh
+      - key: TENANT_ID
+        sync: false
+      - key: PROJECT_PLAN_TIER
+        sync: false
+      - key: MONGODB_URI
+        sync: false
+      - key: SESSION_SECRET
+        sync: false
+      - key: BOOTSTRAP_ADMIN_PASSWORD
+        sync: false
+      - key: BUSINESS_CONFIG_JSON
+        sync: false
+      - key: QIROX_PLATFORM_URL
+        sync: false
+      - key: QIROX_WHATSAPP_API_KEY
+        sync: false
+      - key: QIROX_WHATSAPP_API_PATH
+        sync: false

@@ -1,0 +1,15 @@
+- [Elwa brand](elwa-brand.md) — Use Elwa in English and إلوة in Arabic; the supplied Elwa logo and splash image are the brand assets.
+- [Customer menu mode](customer-menu-mode.md) — Public customers browse and register only; employee POS ordering stays enabled.
+- [Invoice logo scope](invoice-logo-scope.md) — Use the supplied image on invoices, without changing unrelated app or website logos.
+- [Customer phone format](customer-phone.md) — Keep Saudi customer phones in legacy local form; store other countries as E.164 for matching.
+- [Menu hero photos](menu-hero-photos.md) — Bundled hero banner files are 1×1 placeholders; display only candidate images that load at usable dimensions.
+- [Refund handling](refund-handling.md) — Restock only refunded lines with exact saved ingredient costs; keep legacy orders non-restockable and uncertain image matches unassigned.
+- [Contact sheets](contact-sheets.md) — ImageMagick `montage` invokes an unavailable default font here; build unlabeled grids with `+append` and `-append`.
+- [Canonical site domain](canonical-domain.md) — https://elwa.site is live and verified; keep canonical URLs, sitemap and Open Graph on this host.
+- [Render build compatibility](render-build-compatibility.md) — Normalize Replit-only npm lock URLs in Render's build copy and keep Replit development plugins out of production builds.
+- [Render release verification](render-release-verification.md) — A healthy endpoint can still serve an old release; verify the deploy commit and live asset hash.
+- [Foodics history](foodics-history.md) — Keep imported historical figures aggregate-only; summarize them without creating fake order records.
+- [WhatsApp customer flow](whatsapp-customer-flow.md) — Use country-aware OTP accounts and enforce a three-second gap for all automated WhatsApp messages.
+- [Lite plan access](lite-plan-access.md) — Customer management is available on Lite; AI navigation should be hidden there.
+- [iPad printer bridge](ipad-printer-bridge.md) — iPad browsers cannot reach generic USB/BLE or raw LAN TCP; use verified AirPrint or a local LAN agent.
+- [GitHub auth recovery](github-auth-recovery.md) — Replit-managed Git auth is separate from workspace PAT secrets; repair the OAuth connection when pushes return 401.
