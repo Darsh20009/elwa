@@ -60,7 +60,7 @@ export function useReceiptPrintJob(scope: string, endpoint: "/jobs" | "/test", p
   const [timedOut, setTimedOut] = useState(false);
   const lock = useRef(false);
   const generation = useRef(0);
-  const keys = useRef<{ normal?: string; reprint?: string }>({});
+  const keys = useRef<{ normal?: string; reprint?: string; reprintCompleted?: boolean }>({});
   const polls = useRef(0);
   const [pollCycle, setPollCycle] = useState(0);
   useEffect(() => {
@@ -89,6 +89,7 @@ export function useReceiptPrintJob(scope: string, endpoint: "/jobs" | "/test", p
         next = await receiptRequest("GET", `/jobs/${encodeURIComponent(failure.body.jobId)}`);
       }
       if (current !== generation.current) return;
+      if (isConflict && keys.current.reprint) keys.current.reprintCompleted = true;
       setJob(next); polls.current = 0; setTimedOut(false); setPollCycle(v => v + 1);
     } catch (cause) {
       if (current === generation.current) setError(cause as PrintApiError);
@@ -97,6 +98,10 @@ export function useReceiptPrintJob(scope: string, endpoint: "/jobs" | "/test", p
     }
   }
   function submit(reprint = false) {
+    if (reprint && keys.current.reprintCompleted) {
+      keys.current.reprint = undefined;
+      keys.current.reprintCompleted = false;
+    }
     return perform(async () => {
       const kind = reprint ? "reprint" : "normal";
       if (!keys.current[kind]) {
@@ -106,7 +111,9 @@ export function useReceiptPrintJob(scope: string, endpoint: "/jobs" | "/test", p
         keys.current[kind] = saved || crypto.randomUUID();
         try { sessionStorage.setItem(storageKey, keys.current[kind]!); } catch {}
       }
-      return receiptRequest("POST", endpoint, { ...payload, idempotencyKey: keys.current[kind], reprint });
+      const result = await receiptRequest<ReceiptPrintJob>("POST", endpoint, { ...payload, idempotencyKey: keys.current[kind], reprint });
+      if (reprint) keys.current.reprintCompleted = true;
+      return result;
     });
   }
   function refresh() {

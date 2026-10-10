@@ -16,6 +16,12 @@ const key = z.string().min(16).max(100).regex(/^[a-zA-Z0-9_-]+$/);
 const text = z.string().trim().max(120);
 const fail = (status: number, message: string) => Object.assign(new Error(message), { status });
 const run = (fn: (req: any, res: any) => Promise<any>): RequestHandler => (req, res, next) => { Promise.resolve(fn(req, res)).catch(next); };
+const bodyWithoutServerTenant = (req: any) => {
+  const body = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? { ...req.body } : {};
+  // The app-wide SaaS gate injects the authoritative tenantId into every API body.
+  delete body.tenantId;
+  return body;
+};
 
 router.use((_req, res, next) => { res.set("Cache-Control", "no-store"); next(); });
 router.use(rateLimit({ windowMs: 60_000, max: 120, standardHeaders: true, legacyHeaders: false }));
@@ -61,6 +67,11 @@ async function authorizedJob(req: AuthRequest, jobId: string) {
   return job;
 }
 function jobResult(job: any) { return { id: String(job._id), status: job.status }; }
+async function checkedReceipt(order: any, business: any, width: 58 | 80, reprint = false) {
+  const html = await renderReceipt(order, business, width, reprint);
+  if (Buffer.byteLength(html, "utf8") > 2_000_000) throw fail(413, "Receipt is too large to print");
+  return html;
+}
 async function expireClaims(bridgeId: any) {
   // Never resend a possibly submitted job after crash/restart.
   await ReceiptPrintJob.updateMany({ bridgeId, status: "processing",
@@ -70,7 +81,7 @@ async function expireClaims(bridgeId: any) {
 
 // Agent-only routes precede employee session middleware.
 router.post("/agent/pair", rateLimit({ windowMs: 300_000, max: 10 }), run(async (req, res) => {
-  const body = z.object({ code: z.string().regex(/^[A-Fa-f0-9]{16}$/) }).strict().parse(req.body);
+  const body = z.object({ code: z.string().regex(/^[A-Fa-f0-9]{16}$/) }).strict().parse(bodyWithoutServerTenant(req));
   const token = randomBytes(32).toString("hex");
   const config: any = await ReceiptPrinter.findOneAndUpdate(
     { pairHash: hash(body.code.toUpperCase()), pairExpiresAt: { $gt: new Date() } },
@@ -78,7 +89,7 @@ router.post("/agent/pair", rateLimit({ windowMs: 300_000, max: 10 }), run(async 
       $unset: { pairHash: "", pairExpiresAt: "" } }, { new: true });
   if (!config) throw fail(401, "Pairing code invalid or expired");
   // A new installation must not resume jobs claimed by the previous credential.
-  await ReceiptPrintJob.updateMany({ bridgeId: config._id, status: { $in: ["processing", "spooled"] } },
+  await ReceiptPrintJob.updateMany({ bridgeId: config._id, status: "processing" },
     { $set: { status: "unknown", errorCode: "CREDENTIAL_ROTATED", finishedAt: new Date() } });
   res.json({ token, bridgeId: String(config._id), paperWidth: config.paperWidth });
 }));
@@ -94,7 +105,7 @@ router.use("/agent", (req: any, res, next) => {
 });
 
 router.post("/agent/poll", run(async (req, res) => {
-  z.object({}).strict().parse(req.body);
+  z.object({}).strict().parse(bodyWithoutServerTenant(req));
   const config = req.bridge;
   await ReceiptPrinter.updateOne({ _id: config._id }, { $set: { lastSeenAt: new Date() } });
   await expireClaims(config._id);
@@ -113,7 +124,7 @@ router.post("/agent/jobs/:id/result", run(async (req, res) => {
     status: z.enum(["spooled", "completed", "failed", "unknown"]),
     errorCode: z.enum(["RENDER_FAILED", "DRIVER_UNAVAILABLE", "SPOOL_UNCERTAIN", "SPOOL_FAILED", "BRIDGE_INTERRUPTED"]).optional(),
     spoolId: z.string().regex(/^[a-zA-Z0-9_.-]{1,100}$/).optional(),
-  }).strict().parse(req.body);
+  }).strict().parse(bodyWithoutServerTenant(req));
   const job: any = await ReceiptPrintJob.findOne({
     _id: id.parse(req.params.id), bridgeId: req.bridge._id, claimHash: hash(body.claimToken),
     credentialVersion: req.bridge.credentialVersion,
@@ -142,7 +153,7 @@ router.put("/config", manage, run(async (req, res) => {
   const body = z.object({
     branchId: z.string().min(1).max(100), name: text, manufacturer: text, model: text,
     paperWidth: z.union([z.literal(58), z.literal(80)]), adapter: z.enum(["browser", "usb-bridge"]),
-  }).strict().parse(req.body);
+  }).strict().parse(bodyWithoutServerTenant(req));
   const scope = await branchScope(req, body.branchId);
   // A paper-width/driver change must not silently alter already queued receipts.
   const existing: any = await ReceiptPrinter.findOne(scope);
@@ -153,7 +164,7 @@ router.put("/config", manage, run(async (req, res) => {
   res.json(publicConfig(config, req.employee));
 }));
 router.post("/pair-code", manage, run(async (req, res) => {
-  const body = z.object({ branchId: z.string().min(1).max(100) }).strict().parse(req.body);
+  const body = z.object({ branchId: z.string().min(1).max(100) }).strict().parse(bodyWithoutServerTenant(req));
   const scope = await branchScope(req, body.branchId);
   const code = randomBytes(8).toString("hex").toUpperCase();
   const expiresAt = new Date(Date.now() + 300_000);
@@ -162,13 +173,13 @@ router.post("/pair-code", manage, run(async (req, res) => {
   res.json({ code, expiresAt, branchId: config.branchId });
 }));
 router.post("/revoke", manage, run(async (req, res) => {
-  const body = z.object({ branchId: z.string().min(1).max(100) }).strict().parse(req.body);
+  const body = z.object({ branchId: z.string().min(1).max(100) }).strict().parse(bodyWithoutServerTenant(req));
   const scope = await branchScope(req, body.branchId);
   const config = await ReceiptPrinter.findOneAndUpdate(scope,
     { $unset: { tokenHash: "", pairHash: "", pairExpiresAt: "", lastSeenAt: "" }, $set: { credentialVersion: 0 } },
     { new: true });
   if (config) {
-    await ReceiptPrintJob.updateMany({ bridgeId: config._id, status: { $in: ["processing", "spooled"] } },
+    await ReceiptPrintJob.updateMany({ bridgeId: config._id, status: "processing" },
       { $set: { status: "unknown", errorCode: "BRIDGE_INTERRUPTED", finishedAt: new Date() } });
     await ReceiptPrintJob.updateMany({ bridgeId: config._id, status: "pending" },
       { $set: { status: "failed", errorCode: "DRIVER_UNAVAILABLE", finishedAt: new Date() } });
@@ -180,7 +191,7 @@ router.get("/orders/:id/preview", run(async (req, res) => {
   const config = await configFor({ tenantId: order.tenantId, branchId: order.branchId });
   const business: any = await BusinessConfigModel.findOne({ tenantId: order.tenantId }).lean();
   if (!business) throw fail(409, "Business receipt settings unavailable");
-  res.json({ orderId: String(order._id), html: await renderReceipt(order, business, config.paperWidth),
+  res.json({ orderId: String(order._id), html: await checkedReceipt(order, business, config.paperWidth),
     config: publicConfig(config, req.employee), canReprint: isPrintManager(req.employee) });
 }));
 
@@ -211,17 +222,17 @@ async function createJob(req: any, data: any, res: any) {
   }
 }
 router.post("/jobs", run(async (req, res) => {
-  const body = z.object({ orderId: id, idempotencyKey: key, reprint: z.boolean().default(false) }).strict().parse(req.body);
+  const body = z.object({ orderId: id, idempotencyKey: key, reprint: z.boolean().default(false) }).strict().parse(bodyWithoutServerTenant(req));
   if (body.reprint && !isPrintManager(req.employee)) throw fail(403, "Manager permission required for reprints");
   const order = await authorizedOrder(req, body.orderId);
   const config = await configFor({ tenantId: order.tenantId, branchId: order.branchId });
   const business = await BusinessConfigModel.findOne({ tenantId: order.tenantId }).lean();
   if (!business) throw fail(409, "Business receipt settings unavailable");
   await createJob(req, { ...body, tenantId: order.tenantId, branchId: order.branchId, isTest: false,
-    html: await renderReceipt(order, business, config.paperWidth, body.reprint) }, res);
+    html: await checkedReceipt(order, business, config.paperWidth, body.reprint) }, res);
 }));
 router.post("/test", manage, run(async (req, res) => {
-  const body = z.object({ branchId: z.string().min(1).max(100), idempotencyKey: key }).strict().parse(req.body);
+  const body = z.object({ branchId: z.string().min(1).max(100), idempotencyKey: key }).strict().parse(bodyWithoutServerTenant(req));
   const scope = await branchScope(req, body.branchId);
   const config = await configFor(scope);
   // Explicit non-financial sample, never an invoice/payment record.
@@ -240,9 +251,9 @@ router.get("/jobs/:id", run(async (req, res) => {
     bridgeOnline: isBridgeOnline(config?.lastSeenAt), physicalConfirmed: false });
 }));
 router.post("/jobs/:id/retry", run(async (req, res) => {
-  z.object({}).strict().parse(req.body);
+  z.object({}).strict().parse(bodyWithoutServerTenant(req));
   const job = await authorizedJob(req, req.params.id);
-  if (job.isTest && !isPrintManager(req.employee)) throw fail(403, "Manager required");
+  if ((job.isTest || job.reprint) && !isPrintManager(req.employee)) throw fail(403, "Manager required");
   if (job.orderId) await authorizedOrder(req, job.orderId);
   const config: any = await ReceiptPrinter.findById(job.bridgeId);
   if (!config?.credentialVersion || config.adapter !== "usb-bridge" || !isBridgeOnline(config.lastSeenAt)) throw fail(503, "Bridge unavailable");

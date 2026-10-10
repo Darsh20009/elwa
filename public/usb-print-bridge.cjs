@@ -6,6 +6,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { spawn } = require('node:child_process');
 const { createHash } = require('node:crypto');
+const { createRequire } = require('node:module');
 const readline = require('node:readline/promises');
 
 const home = path.join(os.homedir(), '.config', 'elwa-print-bridge');
@@ -76,10 +77,39 @@ async function driverReady(config, execute = command) {
   const accepting = await execute('/usr/bin/lpstat', ['-a', config.printer]);
   if (/not accepting/i.test(accepting)) throw new Error('Printer queue is not accepting jobs');
 }
+async function renderPdf(html, pdf, width, chrome, directory) {
+  let chromium;
+  try { ({ chromium } = createRequire(path.join(home, 'bridge.cjs'))('playwright-core')); }
+  catch { throw new Error('Install the local PDF renderer: npm install --prefix ~/.config/elwa-print-bridge playwright-core'); }
+  const browser = await chromium.launch({
+    executablePath: chrome, headless: true,
+    args: ['--disable-extensions', '--disable-background-networking', '--disable-sync', '--no-first-run'],
+  });
+  try {
+    const context = await browser.newContext({ javaScriptEnabled: false, serviceWorkers: 'block' });
+    await context.route('**/*', route =>
+      /^(?:data:|about:)/i.test(route.request().url()) ? route.continue() : route.abort());
+    const page = await context.newPage();
+    await page.setContent(html, { waitUntil: 'load', timeout: 30_000 });
+    const contentHeight = await page.evaluate(async () => {
+      await document.fonts.ready;
+      return Math.max(document.body.scrollHeight, document.body.getBoundingClientRect().height);
+    });
+    const heightMm = Math.ceil((contentHeight * 25.4 / 96) + 4);
+    if (!Number.isFinite(heightMm) || heightMm < 20 || heightMm > 2000) throw new Error('Receipt dimensions are invalid');
+    await page.pdf({
+      path: pdf, width: `${width}mm`, height: `${heightMm}mm`,
+      margin: { top: '0mm', right: '0mm', bottom: '0mm', left: '0mm' },
+      printBackground: true, preferCSSPageSize: false, displayHeaderFooter: false,
+    });
+    await context.close();
+  } finally { await browser.close(); }
+}
 async function processJob(job, config, dependencies = {}) {
   const execute = dependencies.command || command;
   const save = dependencies.save || (data => secureWrite(journalFile, data));
   const makeTemp = dependencies.makeTemp || (() => fs.mkdtemp(path.join(os.tmpdir(), 'elwa-receipt-')));
+  const render = dependencies.render || renderPdf;
   const identity = hash(config.token);
   const result = { id: job.id, identity, claimToken: job.claimToken, status: 'unknown', errorCode: 'BRIDGE_INTERRUPTED' };
   let directory;
@@ -90,14 +120,8 @@ async function processJob(job, config, dependencies = {}) {
     await driverReady(config, execute);
     directory = await makeTemp();
     await fs.chmod(directory, 0o700);
-    const html = path.join(directory, 'receipt.html');
     const pdf = path.join(directory, 'receipt.pdf');
-    await fs.writeFile(html, job.html, { mode: 0o600 });
-    await execute(config.chrome, [
-      '--headless', '--disable-gpu', '--disable-extensions', '--disable-background-networking',
-      '--disable-sync', '--no-first-run', '--no-default-browser-check', '--no-pdf-header-footer',
-      `--user-data-dir=${path.join(directory, 'chrome')}`, `--print-to-pdf=${pdf}`, `file://${html}`,
-    ], 45_000);
+    await render(job.html, pdf, job.paperWidth, config.chrome, directory);
     const pdfInfo = await fs.stat(pdf);
     if (!pdfInfo.size || pdfInfo.size > 20_000_000) throw new Error('Invalid rendered receipt');
     // From here any error is uncertain. Never automatically execute lp twice.
@@ -184,4 +208,4 @@ if (require.main === module) {
   const work = action === 'pair' ? pair(args) : action === 'run' ? run() : Promise.reject(new Error('Use pair or run. Read /docs/usb-print-bridge.md on your Elwa site.'));
   work.catch(error => { console.error(error.message); process.exitCode = 1; });
 }
-module.exports = { validateConfig, validateJob, processJob, driverReady };
+module.exports = { validateConfig, validateJob, processJob, driverReady, renderPdf };

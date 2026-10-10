@@ -12,4 +12,5 @@
 - [WhatsApp customer flow](whatsapp-customer-flow.md) — Use country-aware OTP accounts and enforce a three-second gap for all automated WhatsApp messages.
 - [Lite plan access](lite-plan-access.md) — Customer management is available on Lite; AI navigation should be hidden there.
 - [iPad printer bridge](ipad-printer-bridge.md) — iPad browsers cannot reach generic USB/BLE or raw LAN TCP; use verified AirPrint or a local LAN agent.
+- [SaaS request tenant injection](saas-request-tenant-injection.md) — The global API gate injects tenantId into every API body before route validation.
 - [GitHub auth recovery](github-auth-recovery.md) — Replit-managed Git auth is separate from workspace PAT secrets; repair the OAuth connection when pushes return 401.

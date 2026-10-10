@@ -1802,6 +1802,11 @@ export default function PosSystem() {
   };
 
   const handlePrintReceipt = async () => {
+    if (receiptPrintConfig.data?.adapter === "usb-bridge") {
+      setShowReceiptPreview(false);
+      setShowReceiptDialog(true);
+      return;
+    }
     const data = buildLastOrderInvoiceData();
     if (!data) return;
     const ps = loadPrinterSettings();
@@ -1830,6 +1835,11 @@ export default function PosSystem() {
     try { await openReceiptPreviewWindow(data); } catch (e) { console.error(e); }
   };
   const handlePrintCustomerOnly = async () => {
+    if (receiptPrintConfig.data?.adapter === "usb-bridge") {
+      setShowReceiptPreview(false);
+      setShowReceiptDialog(true);
+      return;
+    }
     const data = buildLastOrderInvoiceData();
     if (!data) return;
     const ps = loadPrinterSettings();
@@ -1848,6 +1858,11 @@ export default function PosSystem() {
     try { await printReceiptSection(data, 'kitchen'); } catch (e) { console.error(e); }
   };
   const handlePrintBoth = async () => {
+    if (receiptPrintConfig.data?.adapter === "usb-bridge") {
+      setShowReceiptPreview(false);
+      setShowReceiptDialog(true);
+      return;
+    }
     const data = buildLastOrderInvoiceData();
     if (!data) return;
     try { await printReceiptSection(data, 'both'); } catch (e) { console.error(e); }

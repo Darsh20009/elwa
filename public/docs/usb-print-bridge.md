@@ -21,14 +21,24 @@ paper sizes against that model before deployment.
    actual 58 mm or 80 mm roll, margins and cutting settings. Record the exact
    queue name from `lpstat -p`. Printing to a PDF/virtual queue is not a hardware test.
 2. Install Node.js and Chrome/Chromium. Install an Arabic font such as Noto Sans
-   Arabic on Linux; verify Arabic shaping on paper. The receipt uses the same
+   Arabic on Linux; verify Arabic shaping on paper. Install the PDF renderer:
+
+   ```
+   npm install --prefix "$HOME/.config/elwa-print-bridge" playwright-core
+   ```
+
+   The renderer uses the existing local Chrome/Chromium executable and keeps
+   JavaScript and network requests disabled while measuring the receipt and
+   producing a roll-sized PDF. Install a new renderer version only from a
+   trusted npm registry.
+3. The receipt uses the same
    authoritative server-generated HTML for browser preview and the bridge PDF.
-3. Download `/usb-print-bridge.cjs` from the same HTTPS Elwa website you use.
+4. Download `/usb-print-bridge.cjs` from the same HTTPS Elwa website you use.
    Keep the script in a private permanent local folder, not the Git repository.
-4. In the website's printer settings, an authorized manager selects the correct
+5. In the website's printer settings, an authorized manager selects the correct
    branch, enters the printer name/manufacturer/model, sets the verified paper
    width, and selects USB bridge. Save. Generate a pairing code (expires in 5 minutes).
-5. On the computer, run (replace the example values with your real ones):
+6. On the computer, run (replace the example values with your real ones):
 
    ```
    node usb-print-bridge.cjs pair https://YOUR-ELWA-HOST YOUR_CUPS_QUEUE /usr/bin/chromium
@@ -38,13 +48,13 @@ paper sizes against that model before deployment.
    `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`
    (quote that argument). Enter the pairing code at the prompt.
    Never paste tokens into chat, source control, frontend code or a startup command.
-6. Start:
+7. Start:
 
    ```
    node usb-print-bridge.cjs run
    ```
 
-7. Confirm the website shows the bridge online. Run a manager test print.
+8. Confirm the website shows the bridge online. Run a manager test print.
    Verify Arabic, English, logo, width, margins and actual paper output before
    printing a real invoice. Do not regard “accepted by print queue” as paper confirmation.
 
