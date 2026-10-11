@@ -65,7 +65,7 @@ import { Label } from "@/components/ui/label";
 import { LoadingState } from "@/components/ui/loading-state";
 import { EmptyState } from "@/components/ui/empty-state";
 import DrinkCustomizationDialog, { type DrinkCustomization } from "@/components/drink-customization-dialog";
-import UsbBridgeSettings from "@/components/usb-bridge-settings";
+import PrinterSettingsPanel from "@/components/printer-settings-panel";
 import SecureReceiptPrint from "@/components/secure-receipt-print";
 import { useReceiptPrintConfig } from "@/hooks/use-receipt-print";
 import { SoundSettingsPanel } from "@/components/sound-settings-panel";
@@ -4583,7 +4583,7 @@ export default function PosSystem() {
                 {tc("إعدادات الطابعة", "Printer Settings")}
               </DialogTitle>
             </DialogHeader>
-            <UsbBridgeSettings key={activeBranchId} branchId={activeBranchId?.toString()} />
+            <PrinterSettingsPanel />
           </DialogContent>
         </Dialog>
 
