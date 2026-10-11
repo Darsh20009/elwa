@@ -47,6 +47,8 @@ import type { Employee, CoffeeItem, PaymentMethod, LoyaltyCard } from "@shared/s
 import { MobileBottomNav } from "@/components/MobileBottomNav";
 import PrinterSettingsPanel from "@/components/printer-settings-panel";
 import { ShiftSummaryWidget } from "@/components/shift-summary-widget";
+import PosWhatsappSettings from "@/components/pos-whatsapp-settings";
+import { sendPosOrderWhatsApp } from "@/lib/pos-whatsapp";
 
 interface OrderItem {
  coffeeItem: CoffeeItem;
@@ -56,52 +58,6 @@ interface OrderItem {
    addons?: any[];
    totalAddonsPrice?: number;
  };
-}
-
-interface WhatsAppMessageData {
- phone: string;
- orderNumber: string;
- customerName: string;
- items: OrderItem[];
- total: string;
- paymentMethod: string;
-}
-
-function generateWhatsAppLink(data: WhatsAppMessageData): string {
- const message = `
-مرحباً ${data.customerName}
-
-تم استلام طلبك بنجاح!
-
-رقم الطلب: ${fmtOrderNum(data.orderNumber)}
-
-تفاصيل الطلب:
-${data.items.map(item => {
-  let price = Number(item.coffeeItem.price) || 0;
-  if ((item as any).selectedSize && item.coffeeItem.availableSizes) {
-    const sz = (item.coffeeItem.availableSizes as any[]).find((s: any) => s.nameAr === (item as any).selectedSize);
-    if (sz) price = Number(sz.price) || price;
-  }
-  const addonsExtra = ((item.customization as any)?.selectedItemAddons || []).reduce((s: number, a: any) => s + (Number(a.price) || 0), 0);
-  return `• ${item.coffeeItem.nameAr}${(item as any).selectedSize ? ` (${(item as any).selectedSize})` : ''} × ${item.quantity} - ${((price + addonsExtra) * item.quantity).toFixed(2)} ريال`;
-}).join('\n')}
-
-الإجمالي: ${data.total} ريال
-طريقة الدفع: ${data.paymentMethod}
-
-حالة الطلب: تحت التنفيذ
-
-سنبلغك عند اكتمال طلبك. شكراً لتعاملك معنا!
-
-Elwa
-`.trim();
-
-  const normalizedPhone = normalizeCustomerPhone(data.phone);
-  const internationalPhone = normalizedPhone
-    ? (normalizedPhone.startsWith("+") ? normalizedPhone.slice(1) : `966${normalizedPhone}`)
-    : "";
-
-  return `https://wa.me/${internationalPhone}?text=${encodeURIComponent(message)}`;
 }
 
 export default function EmployeeCashier() {
@@ -493,15 +449,6 @@ export default function EmployeeCashier() {
  date: new Date().toISOString()
  });
  
- const whatsappData: WhatsAppMessageData = {
- phone: customerPhone,
- orderNumber: order.orderNumber,
- customerName,
- items: orderItems,
- total: order.totalAmount,
- paymentMethod: paymentMethodAr
- };
- 
  if (order.offline) {
    // Offline order — saved locally, will sync later
    toast({
@@ -510,40 +457,20 @@ export default function EmployeeCashier() {
      className: "bg-orange-600 text-white",
    });
  } else {
-   let whatsappSent = false;
-   if (customerPhone) {
-     try {
-       const response = await fetch(`/api/orders/${encodeURIComponent(order.orderNumber)}/send-whatsapp`, {
-         method: "POST",
-         credentials: "include",
-       });
-       whatsappSent = response.ok;
-     } catch {
-       whatsappSent = false;
-     }
-   }
-
-   if (whatsappSent) {
+    try {
+      const delivery = await sendPosOrderWhatsApp(String(order.orderNumber));
      toast({
-       title: tc("تم إنشاء الطلب وإرسال واتساب", "Order created and WhatsApp sent"),
-       description: `${tc("رقم الطلب","Order #")}: ${fmtOrderNum(order.orderNumber)}`,
-       className: "bg-green-600 text-white",
-     });
-   } else if (customerPhone) {
-     window.open(generateWhatsAppLink(whatsappData), "_blank");
-     toast({
-       title: tc("تم إنشاء الطلب", "Order created"),
-       description: tc(
-         "تعذر الإرسال التلقائي عبر واتساب؛ تم فتح رسالة جاهزة للإرسال اليدوي.",
-         "Automatic WhatsApp delivery failed; a ready-to-send draft was opened."
-       ),
-       className: "bg-orange-600 text-white",
-     });
-   } else {
-     toast({
-       title: tc("تم إنشاء الطلب", "Order created"),
-       description: tc("لا يوجد رقم جوال لإرسال واتساب.", "No customer phone number is available for WhatsApp."),
-       className: "bg-green-600 text-white",
+        title: tc("تم إرسال تفاصيل الطلب عبر QIROX", "Order details sent through QIROX"),
+        description: delivery.invoicePdfAttached
+          ? tc("وصلت التفاصيل والفاتورة PDF للطرفين.", "Details and PDF invoice were sent to both recipients.")
+          : tc("وصلت التفاصيل للعميل ورقم الاستقبال، لكن QIROX الحالي لم يرفق ملف PDF.", "Details reached the customer and receiver, but the current QIROX route did not attach a PDF."),
+        className: delivery.invoicePdfAttached ? "bg-green-600 text-white" : "bg-orange-600 text-white",
+      });
+    } catch (error) {
+      toast({
+        title: tc("تم إنشاء الطلب لكن تعذر إرسال واتساب", "Order created, but WhatsApp delivery failed"),
+        description: error instanceof Error ? error.message : tc("تعذر الاتصال بخدمة QIROX", "Could not reach QIROX"),
+        variant: "destructive",
      });
    }
  }
@@ -1064,6 +991,22 @@ export default function EmployeeCashier() {
      });
      return;
    }
+    if (!customerName.trim()) {
+      toast({
+        title: tc("اسم العميل مطلوب", "Customer name required"),
+        description: tc("أدخل اسم العميل قبل إتمام الطلب", "Enter the customer's name before placing the order"),
+        variant: "destructive",
+      });
+      return;
+    }
+    if (!normalizeCustomerPhone(customerPhone)) {
+      toast({
+        title: tc("رقم جوال العميل مطلوب", "Customer phone required"),
+        description: tc("أدخل رقم جوال صالحاً قبل إتمام الطلب", "Enter a valid customer phone number before placing the order"),
+        variant: "destructive",
+      });
+      return;
+    }
 
    // Capture all values BEFORE mutateAsync (form is reset in onSuccess)
    const capturedItems = [...orderItems];
@@ -1590,6 +1533,7 @@ export default function EmployeeCashier() {
  onChange={(e) => setCustomerName(e.target.value)}
  placeholder={tc("أدخل اسم العميل","Enter customer name")}
  className="bg-gray-50 border-gray-300 text-gray-900 text-right"
+  required
  data-testid="input-customer-name"
  />
  </div>
@@ -1605,6 +1549,9 @@ export default function EmployeeCashier() {
  onChange={(e) => setCustomerPhone(e.target.value)}
  placeholder="5xxxxxxxx"
  className="bg-gray-50 border-gray-300 text-gray-900 text-right flex-1"
+  type="tel"
+  inputMode="tel"
+  required
  data-testid="input-customer-phone"
  />
  <Dialog open={showBarcodeScanner} onOpenChange={setShowBarcodeScanner}>
@@ -1649,6 +1596,7 @@ export default function EmployeeCashier() {
  <p className="text-xs text-primary text-right animate-pulse">{tc("جاري التحقق من العميل...","Checking customer...")}</p>
  )}
  </div>
+  <PosWhatsappSettings canEdit={employee?.role === "admin" || employee?.role === "owner"} />
 
  {showRegisterDialog && customerPhone.length === 9 && (
  <div className="bg-blue-900/20 border border-blue-500/30 rounded-lg p-4 space-y-3">

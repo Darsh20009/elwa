@@ -72,6 +72,9 @@ import { SoundSettingsPanel } from "@/components/sound-settings-panel";
 import { loadPrinterSettings, savePrinterSettings } from "@/lib/thermal-printer";
 import RefundDialog from "@/components/refund-dialog";
 import { PosShiftBar } from "@/components/pos-shift-bar";
+import PosWhatsappSettings from "@/components/pos-whatsapp-settings";
+import { sendPosOrderWhatsApp } from "@/lib/pos-whatsapp";
+import { normalizeCustomerPhone } from "@shared/customer-phone";
 
 type OrderType = "dine_in" | "takeaway" | "delivery" | "car_pickup";
 type PaymentMethod = "cash" | "card" | "qahwa-card" | "split";
@@ -1400,6 +1403,15 @@ export default function PosSystem() {
 
   const handleCheckout = async () => {
     if (orderItems.length === 0) return;
+    if (!customerName.trim() || !normalizeCustomerPhone(customerPhone)) {
+      setShowCustomerInfo(true);
+      toast({
+        variant: "destructive",
+        title: tc("بيانات العميل مطلوبة", "Customer details required"),
+        description: tc("أدخل اسم العميل ورقم جوال صالحاً قبل إتمام الطلب.", "Enter the customer's name and a valid phone number before placing the order."),
+      });
+      return;
+    }
 
     // Validate split payment: ensure all person payments sum to total
     if (paymentMethod === "split") {
@@ -1612,6 +1624,25 @@ export default function PosSystem() {
       }
 
       const orderNumForPrint = result.orderNumber || result.dailyNumber || result._id?.slice(-4) || '—';
+      if (result.orderNumber) {
+        void sendPosOrderWhatsApp(String(result.orderNumber))
+          .then((delivery) => {
+            toast({
+              title: tc("تم إرسال تفاصيل الطلب عبر QIROX", "Order details sent through QIROX"),
+              description: delivery.invoicePdfAttached
+                ? tc("وصلت التفاصيل والفاتورة PDF للطرفين.", "Details and PDF invoice were sent to both recipients.")
+                : tc("وصلت التفاصيل للعميل ورقم الاستقبال، لكن QIROX الحالي لم يرفق ملف PDF.", "Details reached the customer and receiver, but the current QIROX route did not attach a PDF."),
+              className: delivery.invoicePdfAttached ? "bg-green-600 text-white" : "bg-orange-600 text-white",
+            });
+          })
+          .catch((error) => {
+            toast({
+              variant: "destructive",
+              title: tc("تم إنشاء الطلب لكن تعذر إرسال واتساب", "Order created, but WhatsApp delivery failed"),
+              description: error instanceof Error ? error.message : tc("تعذر الاتصال بخدمة QIROX", "Could not reach QIROX"),
+            });
+          });
+      }
 
       // ── Pre-generate ZATCA QR code in background so printing is instant ──
       prewarmZatcaQr({
@@ -2665,6 +2696,7 @@ export default function PosSystem() {
                     value={customerName}
                     onChange={(e) => setCustomerName(e.target.value)}
                     className="h-9 text-sm"
+                    required
                     data-testid="input-pos-customer-name"
                   />
                   <div className="relative">
@@ -2677,6 +2709,9 @@ export default function PosSystem() {
                       }}
                       className={`h-9 text-sm pr-8 ${customerLookupFound === true ? 'border-green-500 focus-visible:ring-green-400' : customerLookupFound === false ? 'border-orange-400' : ''}`}
                       dir="ltr"
+                      type="tel"
+                      inputMode="tel"
+                      required
                       data-testid="input-pos-customer-phone"
                     />
                     <div className="absolute inset-y-0 right-2 flex items-center pointer-events-none">
@@ -2685,6 +2720,7 @@ export default function PosSystem() {
                       {!isLookingUpCustomer && customerLookupFound === false && <User className="w-3.5 h-3.5 text-orange-400" />}
                     </div>
                   </div>
+                  <PosWhatsappSettings canEdit={isAdminOwner} />
                   {orderType === "dine_in" && (
                     <Input
                       placeholder={t('pos.table_number')}

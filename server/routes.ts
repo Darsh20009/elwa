@@ -1267,6 +1267,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const body = req.body;
 
       // ── INPUT VALIDATION ───────────────────────────────────────────────────
+      if (body.channel === "pos") {
+        let customerInfo = body.customerInfo;
+        if (typeof customerInfo === "string") {
+          try {
+            customerInfo = JSON.parse(customerInfo);
+          } catch {
+            customerInfo = {};
+          }
+        }
+        const customerName = String(customerInfo?.customerName || body.customerName || "").trim();
+        const customerPhoneInput = customerInfo?.phoneNumber || customerInfo?.customerPhone || body.customerPhone || "";
+        const customerPhone = normalizeCustomerPhone(String(customerPhoneInput));
+        if (!customerName || !customerPhone) {
+          return res.status(400).json({
+            error: "اسم العميل ورقم جواله الصحيح مطلوبان لطلب نقطة البيع",
+            code: "POS_CUSTOMER_REQUIRED",
+          });
+        }
+        body.customerName = customerName;
+        body.customerPhone = customerPhone;
+        body.customerInfo = {
+          ...(customerInfo && typeof customerInfo === "object" && !Array.isArray(customerInfo) ? customerInfo : {}),
+          customerName,
+          customerPhone,
+          phoneNumber: customerPhone,
+        };
+      }
       if (!body.items || !Array.isArray(body.items) || body.items.length === 0) {
         return res.status(400).json({ error: "items مطلوب ويجب أن يكون مصفوفة تحتوي على عنصر واحد على الأقل" });
       }
@@ -1937,6 +1964,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const serialized = serializeDoc(config);
+      // Keep the internal POS order-routing number out of the public config response.
+      delete serialized.posOrdersWhatsappReceiver;
       if (!serialized.menuLayout) serialized.menuLayout = 'classic';
       if (!serialized.cashierLayout) serialized.cashierLayout = 'classic';
       // Apply defaults for service fee fields (for documents created before these fields were added)
@@ -10089,7 +10118,51 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Send order confirmation through the configured QIROX WhatsApp integration.
+  app.get("/api/pos/whatsapp-receiver", requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const employee = req.employee;
+      if (!employee) return res.status(403).json({ error: "غير مصرح لك بالوصول" });
+      if (!["admin", "owner"].includes(employee.role || "")) {
+        return res.status(403).json({ error: "لا يحق إلا للمدير أو المالك عرض رقم استقبال الطلبات" });
+      }
+      const tenantId = employee.tenantId || getTenantIdFromRequest(req) || process.env.TENANT_ID!;
+      const config = await BusinessConfigModel.findOne({ tenantId })
+        .select("posOrdersWhatsappReceiver")
+        .lean();
+      res.setHeader("Cache-Control", "no-store");
+      return res.json({ receiverNumber: String((config as any)?.posOrdersWhatsappReceiver || "") });
+    } catch {
+      console.error("[POS WhatsApp] Receiver settings lookup failed");
+      return res.status(500).json({ error: "تعذر تحميل رقم استقبال الطلبات" });
+    }
+  });
+
+  app.patch("/api/pos/whatsapp-receiver", requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const employee = req.employee;
+      if (!employee || !["admin", "owner"].includes(employee.role || "")) {
+        return res.status(403).json({ error: "يستطيع المدير أو المالك فقط تغيير رقم استقبال الطلبات" });
+      }
+      const rawNumber = String(req.body?.receiverNumber || "").trim();
+      const receiverNumber = rawNumber ? normalizeCustomerPhone(rawNumber) : "";
+      if (rawNumber && !receiverNumber) {
+        return res.status(400).json({ error: "رقم واتساب لاستقبال الطلبات غير صالح" });
+      }
+      const tenantId = employee.tenantId || getTenantIdFromRequest(req) || process.env.TENANT_ID!;
+      const config = await BusinessConfigModel.findOneAndUpdate(
+        { tenantId },
+        { $set: { posOrdersWhatsappReceiver: receiverNumber, updatedAt: new Date() } },
+        { new: true, upsert: true, strict: false },
+      ).select("posOrdersWhatsappReceiver").lean();
+      cache.invalidateKey(cacheKey("biz-config", tenantId));
+      return res.json({ receiverNumber: String((config as any)?.posOrdersWhatsappReceiver || "") });
+    } catch {
+      console.error("[POS WhatsApp] Receiver settings update failed");
+      return res.status(500).json({ error: "تعذر حفظ رقم استقبال الطلبات" });
+    }
+  });
+
+  // Send POS order details through the configured QIROX WhatsApp integration.
   app.post("/api/orders/:orderNumber/send-whatsapp", requireAuth, async (req: AuthRequest, res) => {
     try {
       const employee = req.employee;
@@ -10100,11 +10173,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const order = await storage.getOrderByNumber(req.params.orderNumber);
       if (!order) return res.status(404).json({ error: "الطلب غير موجود" });
       const serializedOrder = serializeDoc(order);
+      const orderTenantId = String(serializedOrder.tenantId || "");
+      const scopedTenantId = String(employee.tenantId || getTenantIdFromRequest(req) || process.env.TENANT_ID || "");
+      if (orderTenantId && scopedTenantId && orderTenantId !== scopedTenantId) {
+        return res.status(403).json({ error: "غير مصرح لك بالوصول لهذا الطلب" });
+      }
 
+      const orderBranchId = String(serializedOrder.branchId || "");
+      const employeeBranchId = String(employee.branchId || "");
       if (["cashier", "manager"].includes(employee.role || "")
-        && serializedOrder.branchId
-        && employee.branchId
-        && serializedOrder.branchId !== employee.branchId) {
+        && orderBranchId
+        && orderBranchId !== employeeBranchId) {
         return res.status(403).json({ error: "غير مصرح لك بالوصول لهذا الطلب" });
       }
 
@@ -10116,15 +10195,36 @@ export async function registerRoutes(app: Express): Promise<Server> {
           customerInfo = {};
         }
       }
-      const recipient = customerInfo?.phoneNumber || customerInfo?.customerPhone || serializedOrder.customerPhone;
-      if (!recipient) return res.status(400).json({ error: "لا يوجد رقم جوال للعميل في الطلب" });
+      const customerPhoneInput = customerInfo?.phoneNumber || customerInfo?.customerPhone || serializedOrder.customerPhone;
+      const customerRecipient = normalizeCustomerPhone(String(customerPhoneInput || ""));
+      if (!customerRecipient) return res.status(400).json({ error: "رقم جوال العميل غير صالح" });
 
       const orderNumber = String(serializedOrder.orderNumber || req.params.orderNumber);
-      const customerName = String(customerInfo?.customerName || customerInfo?.name || "عميل").trim().slice(0, 80);
+      const customerName = String(customerInfo?.customerName || customerInfo?.name || serializedOrder.customerName || "").trim().slice(0, 80);
+      if (!customerName) return res.status(400).json({ error: "اسم العميل غير موجود في الطلب" });
+      const tenantId = orderTenantId || scopedTenantId;
+      const businessConfig = tenantId
+        ? await BusinessConfigModel.findOne({ tenantId }).select("posOrdersWhatsappReceiver").lean()
+        : null;
+      const receiverRecipient = normalizeCustomerPhone(String((businessConfig as any)?.posOrdersWhatsappReceiver || ""));
+      if (!receiverRecipient) {
+        return res.status(409).json({
+          error: "احفظ رقم استقبال الطلبات في إعدادات POS قبل إرسال واتساب",
+          code: "POS_WHATSAPP_RECEIVER_NOT_CONFIGURED",
+        });
+      }
       const total = Number(serializedOrder.totalAmount);
-      const items = Array.isArray(serializedOrder.items) ? serializedOrder.items : [];
+      let items = serializedOrder.items;
+      if (typeof items === "string") {
+        try {
+          items = JSON.parse(items);
+        } catch {
+          items = [];
+        }
+      }
+      if (!Array.isArray(items)) items = [];
       const itemLines = items.slice(0, 40).map((item: any) => {
-        const itemName = String(item.nameAr || item.name || item.productName || item.title || "صنف").trim().slice(0, 100);
+        const itemName = String(item.nameAr || item.name || item.productName || item.title || item.coffeeItem?.nameAr || "صنف").trim().slice(0, 100);
         const quantity = Number(item.quantity ?? item.qty ?? 1);
         const safeQuantity = Number.isFinite(quantity) && quantity > 0 ? quantity : 1;
         const lineTotal = Number(item.totalPrice ?? item.lineTotal ?? item.amount);
@@ -10135,32 +10235,96 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const createdAt = serializedOrder.createdAt
         ? new Date(serializedOrder.createdAt).toLocaleString("ar-SA", { timeZone: "Asia/Riyadh" })
         : "";
-      const messageParts = [
-        `إلوة | ملخص فاتورة نقطة البيع`,
+      const paymentConfirmed = serializedOrder.paymentStatus === "paid" || serializedOrder.status === "payment_confirmed";
+      const paidAmount = paymentConfirmed
+        ? Math.max(0, total - (Number(serializedOrder.refundedAmount) || 0))
+        : 0;
+      const paymentLine = paymentConfirmed
+        ? `المبلغ المدفوع: ${paidAmount.toFixed(2)} ر.س`
+        : `المبلغ المطلوب: ${Number.isFinite(total) ? total.toFixed(2) : "0.00"} ر.س`;
+      const customerMessageParts = [
         `مرحباً ${customerName}`,
         "",
+        "شكراً لطلبك من إلوة.",
         `رقم الطلب: ${orderNumber}`,
         createdAt ? `التاريخ: ${createdAt}` : "",
         itemLines.length ? "الأصناف:" : "",
         ...itemLines,
         Number.isFinite(total) ? `الإجمالي: ${total.toFixed(2)} ر.س` : "",
+        paymentLine,
         serializedOrder.paymentMethod ? `طريقة الدفع: ${String(serializedOrder.paymentMethod).slice(0, 60)}` : "",
-        "",
-        "شكراً لزيارتكم إلوة.",
       ].filter(Boolean);
-      const fullMessage = messageParts.join("\n");
-      const message = Array.from(fullMessage).slice(0, 3950).join("");
+      const receiverMessageParts = [
+        "إلوة | طلب نقطة بيع جديد",
+        `رقم الطلب: ${orderNumber}`,
+        createdAt ? `التاريخ: ${createdAt}` : "",
+        `العميل: ${customerName}`,
+        `جوال العميل: ${customerRecipient}`,
+        itemLines.length ? "الأصناف:" : "",
+        ...itemLines,
+        Number.isFinite(total) ? `الإجمالي: ${total.toFixed(2)} ر.س` : "",
+        paymentLine,
+        serializedOrder.paymentMethod ? `طريقة الدفع: ${String(serializedOrder.paymentMethod).slice(0, 60)}` : "",
+      ].filter(Boolean);
+      const trimMessage = (parts: string[]) => Array.from(parts.join("\n")).slice(0, 3950).join("");
+      const customerMessage = trimMessage(customerMessageParts);
+      const receiverMessage = trimMessage(receiverMessageParts);
+      const orderId = String(serializedOrder.id || order._id || orderNumber);
+      const sameRecipient = customerRecipient === receiverRecipient;
+      const sameRecipientMessage = trimMessage([
+        `مرحباً ${customerName}`,
+        "شكراً لطلبك من إلوة.",
+        ...receiverMessageParts,
+      ]);
+      let customerDelivery: "sent" | "failed" = "failed";
+      let receiverDelivery: "sent" | "failed" = "failed";
+      let customerError: unknown;
+      let receiverError: unknown;
 
-      await sendSaasWhatsApp({
-        to: String(recipient),
-        clientName: customerName,
-        message,
-        idempotencyKey: `order-confirmation-${String(serializedOrder.id || order._id || orderNumber)}`,
+      try {
+        await sendSaasWhatsApp({
+          to: customerRecipient,
+          clientName: customerName,
+          message: sameRecipient ? sameRecipientMessage : customerMessage,
+          idempotencyKey: `pos-order-customer-${orderId}`,
+        });
+        customerDelivery = "sent";
+        if (sameRecipient) receiverDelivery = "sent";
+      } catch (error) {
+        customerError = error;
+      }
+      if (!sameRecipient) {
+        try {
+          await sendSaasWhatsApp({
+            to: receiverRecipient,
+            clientName: "إلوة | استقبال الطلبات",
+            message: receiverMessage,
+            idempotencyKey: `pos-order-receiver-${orderId}`,
+          });
+          receiverDelivery = "sent";
+        } catch (error) {
+          receiverError = error;
+        }
+      }
+
+      console.info(`[POS WhatsApp] order=${orderNumber} customer=${customerDelivery} receiver=${receiverDelivery}`);
+      const delivery = { customer: customerDelivery, receiver: receiverDelivery };
+      if (customerError || receiverError) {
+        return res.status(503).json({
+          error: "تعذر إرسال إحدى رسائل QIROX. الطلب محفوظ ويمكن إعادة المحاولة.",
+          delivery,
+          invoicePdfAttached: false,
+        });
+      }
+      return res.json({
+        ok: true,
+        provider: "QIROX",
+        delivery,
+        invoicePdfAttached: false,
       });
-      return res.json({ ok: true, delivery: "sent" });
     } catch (error) {
       console.error("[WhatsApp] Order confirmation failed:", error instanceof Error ? error.message : "unknown error");
-      return res.status(503).json({ error: "تعذر إرسال رسالة واتساب. تحقق من إعدادات QIROX API." });
+      return res.status(503).json({ error: "تعذر إرسال رسائل واتساب عبر QIROX." });
     }
   });
 

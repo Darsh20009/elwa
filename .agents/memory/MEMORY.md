@@ -9,7 +9,7 @@
 - [Render build compatibility](render-build-compatibility.md) — Normalize Replit-only npm lock URLs in Render's build copy and keep Replit development plugins out of production builds.
 - [Render release verification](render-release-verification.md) — A healthy endpoint can still serve an old release; verify the deploy commit and live asset hash.
 - [Foodics history](foodics-history.md) — Keep imported historical figures aggregate-only; summarize them without creating fake order records.
-- [WhatsApp customer flow](whatsapp-customer-flow.md) — Use country-aware OTP accounts and enforce a three-second gap for all automated WhatsApp messages.
+- [WhatsApp customer flow](whatsapp-customer-flow.md) — Keep country-aware OTP and the three-second send gap; send POS details to customer and receiver, and never claim unverified PDF delivery.
 - [Lite plan access](lite-plan-access.md) — Customer management is available on Lite; AI navigation should be hidden there.
 - [iPad printer bridge](ipad-printer-bridge.md) — iPad browsers cannot reach generic USB/BLE or raw LAN TCP; use verified AirPrint or a local LAN agent.
 - [SaaS request tenant injection](saas-request-tenant-injection.md) — The global API gate injects tenantId into every API body before route validation.

@@ -818,6 +818,7 @@ export interface IBusinessConfig extends Document {
   tenantId: string;
   tradeNameAr: string;
   tradeNameEn?: string;
+  posOrdersWhatsappReceiver?: string;
   activityType: 'cafe' | 'restaurant' | 'both';
   isFoodEnabled: boolean;
   isDrinksEnabled: boolean;
@@ -907,6 +908,7 @@ const BusinessConfigSchema = new Schema<IBusinessConfig>({
   tenantId: { type: String, required: true, unique: true },
   tradeNameAr: { type: String, required: true },
   tradeNameEn: { type: String },
+  posOrdersWhatsappReceiver: { type: String, default: '' },
   activityType: { type: String, enum: ['cafe', 'restaurant', 'both'], default: 'cafe' },
   isFoodEnabled: { type: Boolean, default: false },
   isDrinksEnabled: { type: Boolean, default: true },
