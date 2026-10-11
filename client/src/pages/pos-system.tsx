@@ -266,7 +266,10 @@ export default function PosSystem() {
     getRealtimeEngine(payload);
   }, [activeBranchId, employee?.id]);
 
-  useRealtimeEvent("new_order", (order: any) => {
+  useRealtimeEvent("new_order", (event: any) => {
+    // RealtimeEngine emits the complete websocket envelope: { type, order, ... }.
+    // Unwrap it before using order fields or the POS channel/printer checks fail.
+    const order = event?.order ?? event;
     queryClient.invalidateQueries({ queryKey: ["/api/orders/live"] });
     const isOnlineWebOrder = order?.channel === 'online' || order?.channel === 'web';
     const isPosOrder = order?.channel === 'pos';
@@ -369,7 +372,8 @@ export default function PosSystem() {
     queryClient.invalidateQueries({ queryKey: ["/api/orders/live"] });
   });
 
-  useRealtimeEvent("car_preparation_alert", (order: any) => {
+  useRealtimeEvent("car_preparation_alert", (event: any) => {
+    const order = event?.order ?? event;
     queryClient.invalidateQueries({ queryKey: ["/api/orders/curbside"] });
     setCarPreparationAlerts(prev => {
       if (prev.some(a => a._id === order._id)) return prev;
