@@ -1,6 +1,7 @@
 - [Elwa brand](elwa-brand.md) — Use Elwa in English and إلوة in Arabic; the supplied Elwa logo and splash image are the brand assets.
 - [Customer menu mode](customer-menu-mode.md) — Public customers browse and register only; employee POS ordering stays enabled.
 - [Invoice logo scope](invoice-logo-scope.md) — Use the supplied image on invoices, without changing unrelated app or website logos.
+- [Invoice business details](invoice-business-details.md) — Include Elwa's commercial registration number 4030534754 on invoices.
 - [Customer phone format](customer-phone.md) — Keep Saudi customer phones in legacy local form; store other countries as E.164 for matching.
 - [Menu hero photos](menu-hero-photos.md) — Bundled hero banner files are 1×1 placeholders; display only candidate images that load at usable dimensions.
 - [Refund handling](refund-handling.md) — Restock only refunded lines with exact saved ingredient costs; keep legacy orders non-restockable and uncertain image matches unassigned.

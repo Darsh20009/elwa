@@ -6,6 +6,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { sendSaasWhatsApp } from "./saas-services";
+import { createPosInvoicePdf, createPosInvoiceUrl, verifyPosInvoiceToken } from "./pos-invoice-pdf";
 import { foodicsMonthlySales, foodicsMonthlySalesInfo } from "@shared/foodics-monthly-sales";
 import { normalizeCustomerPhone } from "@shared/customer-phone";
 
@@ -10162,7 +10163,30 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Send POS order details through the configured QIROX WhatsApp integration.
+  // Short-lived public URL fetched by QIROX when it downloads an invoice attachment.
+  app.get("/api/public/pos-invoice.pdf", async (req, res) => {
+    res.setHeader("Cache-Control", "private, no-store, max-age=0");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Robots-Tag", "noindex, nofollow, noarchive");
+    try {
+      const token = verifyPosInvoiceToken(req.query.token);
+      if (!token) return res.status(410).json({ error: "رابط الفاتورة غير صالح أو انتهت صلاحيته" });
+      const order = await OrderModel.findOne({ tenantId: token.tenantId, orderNumber: token.orderNumber }).lean();
+      if (!order) return res.status(404).json({ error: "الطلب غير موجود" });
+      const business = await BusinessConfigModel.findOne({ tenantId: token.tenantId }).lean();
+      const pdf = await createPosInvoicePdf(order, business);
+      const safeNumber = String(order.orderNumber).replace(/[^\w.-]/g, "_").slice(0, 80);
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `attachment; filename="elwa-invoice-${safeNumber}.pdf"`);
+      res.setHeader("Content-Length", String(pdf.length));
+      return res.status(200).send(pdf);
+    } catch (error) {
+      console.error("[POS invoice PDF] Generation failed:", error instanceof Error ? error.message : "unknown error");
+      return res.status(503).json({ error: "تعذر تجهيز ملف الفاتورة" });
+    }
+  });
+
+  // Send POS order details and a short-lived invoice PDF through QIROX WhatsApp.
   app.post("/api/orders/:orderNumber/send-whatsapp", requireAuth, async (req: AuthRequest, res) => {
     try {
       const employee = req.employee;
@@ -10204,7 +10228,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!customerName) return res.status(400).json({ error: "اسم العميل غير موجود في الطلب" });
       const tenantId = orderTenantId || scopedTenantId;
       const businessConfig = tenantId
-        ? await BusinessConfigModel.findOne({ tenantId }).select("posOrdersWhatsappReceiver").lean()
+        ? await BusinessConfigModel.findOne({ tenantId }).select("posOrdersWhatsappReceiver tradeNameAr tradeNameEn vatNumber commercialRegistration vatPercentage currency").lean()
         : null;
       const receiverRecipient = normalizeCustomerPhone(String((businessConfig as any)?.posOrdersWhatsappReceiver || ""));
       if (!receiverRecipient) {
@@ -10271,6 +10295,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const receiverMessage = trimMessage(receiverMessageParts);
       const orderId = String(serializedOrder.id || order._id || orderNumber);
       const sameRecipient = customerRecipient === receiverRecipient;
+      const invoicePdfUrl = createPosInvoiceUrl(orderNumber, tenantId);
+      const invoiceAttachments = [{
+        url: invoicePdfUrl,
+        filename: `elwa-invoice-${orderNumber.replace(/[^\w.-]/g, "_").slice(0, 60)}.pdf`,
+        caption: `فاتورة الطلب ${orderNumber}`,
+      }];
       const sameRecipientMessage = trimMessage([
         `مرحباً ${customerName}`,
         "شكراً لطلبك من إلوة.",
@@ -10287,6 +10317,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           clientName: customerName,
           message: sameRecipient ? sameRecipientMessage : customerMessage,
           idempotencyKey: `pos-order-customer-${orderId}`,
+          attachments: invoiceAttachments,
         });
         customerDelivery = "sent";
         if (sameRecipient) receiverDelivery = "sent";
@@ -10300,6 +10331,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             clientName: "إلوة | استقبال الطلبات",
             message: receiverMessage,
             idempotencyKey: `pos-order-receiver-${orderId}`,
+            attachments: invoiceAttachments,
           });
           receiverDelivery = "sent";
         } catch (error) {
@@ -10314,13 +10346,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
           error: "تعذر إرسال إحدى رسائل QIROX. الطلب محفوظ ويمكن إعادة المحاولة.",
           delivery,
           invoicePdfAttached: false,
+          receiverInvoicePdfAttached: (sameRecipient ? customerDelivery : receiverDelivery) === "sent",
         });
       }
       return res.json({
         ok: true,
         provider: "QIROX",
         delivery,
-        invoicePdfAttached: false,
+        invoicePdfAttached: customerDelivery === "sent",
+        receiverInvoicePdfAttached: (sameRecipient ? customerDelivery : receiverDelivery) === "sent",
       });
     } catch (error) {
       console.error("[WhatsApp] Order confirmation failed:", error instanceof Error ? error.message : "unknown error");

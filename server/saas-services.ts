@@ -113,11 +113,24 @@ export async function sendSaasWhatsApp(options: {
   message: string;
   idempotencyKey: string;
   clientName?: string;
+  attachments?: Array<{ url: string; filename?: string; caption?: string }>;
 }) {
   const recipient = whatsappRecipient(options.to);
   const message = String(options.message || "").trim();
+  const attachments = (options.attachments || []).map((attachment) => {
+    const url = new URL(String(attachment.url || ""));
+    if (url.protocol !== "https:" || url.username || url.password) {
+      throw new Error("WhatsApp attachment must use a public HTTPS URL");
+    }
+    return {
+      url: url.href,
+      ...(attachment.filename ? { filename: String(attachment.filename).replace(/[^\w.\-\u0600-\u06ff]/g, "_").slice(0, 120) } : {}),
+      ...(attachment.caption ? { caption: String(attachment.caption).slice(0, 500) } : {}),
+    };
+  });
   if (!recipient) throw new Error("WhatsApp recipient phone number is invalid");
   if (!message || message.length > 4000) throw new Error("WhatsApp message is invalid");
+  if (attachments.length > 5) throw new Error("WhatsApp supports up to five attachments");
   if (options.idempotencyKey.length < 8 || options.idempotencyKey.length > 160) throw new Error("WhatsApp idempotency key is invalid");
   await send("whatsapp", {
     recipient: {
@@ -127,6 +140,7 @@ export async function sendSaasWhatsApp(options: {
     platformName: config().businessName,
     ...(options.clientName ? { clientName: String(options.clientName).trim().slice(0, 100) } : {}),
     message,
+    ...(attachments.length ? { attachments } : {}),
   }, options.idempotencyKey);
 }
 
