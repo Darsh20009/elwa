@@ -1081,34 +1081,6 @@ export default function PrinterSettingsPanel() {
             </div>
           )}
 
-          <div className="space-y-2">
-            <Label className="text-sm font-medium">{tc("نطاق الطباعة", "Print destination")}</Label>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  if (settings.mode === "queue") updateSetting("mode", "browser");
-                }}
-                aria-pressed={settings.mode !== "queue"}
-                className={`rounded-lg border p-3 text-start transition-colors ${settings.mode !== "queue" ? "border-primary bg-primary/5 ring-1 ring-primary" : "hover:bg-muted"}`}
-                data-testid="button-print-this-device"
-              >
-                <span className="block text-sm font-semibold">{tc("الطباعة هنا فقط", "This device only")}</span>
-                <span className="mt-1 block text-xs text-muted-foreground">{tc("اختر Bluetooth أو سلكي/شبكة من طريقة الاتصال", "Choose Bluetooth or wired/LAN below")}</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => updateSetting("mode", "queue")}
-                aria-pressed={settings.mode === "queue"}
-                className={`rounded-lg border p-3 text-start transition-colors ${settings.mode === "queue" ? "border-primary bg-primary/5 ring-1 ring-primary" : "hover:bg-muted"}`}
-                data-testid="button-print-all-devices"
-              >
-                <span className="block text-sm font-semibold">{tc("طلبات كل الأجهزة", "Orders from all devices")}</span>
-                <span className="mt-1 block text-xs text-muted-foreground">{tc("ترسل للطابور ليطبعها هاتف Android المتصل بالطابعة. فعّلها على كل جهاز POS تريد طباعة طلباته.", "Queue jobs for the Android phone connected to the printer. Enable this on each POS device whose orders should print.")}</span>
-              </button>
-            </div>
-          </div>
-
           {/* Print Mode */}
           <div className="flex items-center justify-between gap-4">
             <div>
