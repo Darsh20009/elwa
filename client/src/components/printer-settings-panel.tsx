@@ -52,6 +52,41 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { useTranslate } from "@/lib/useTranslate";
 
+function createTermuxPrintAgentInstaller(serverOrigin: string, agentKey: string, ip: string, port: number): string {
+  const configDir = '$HOME/.config/elwa-print-agent';
+  return [
+    '#!/data/data/com.termux/files/usr/bin/bash',
+    'set -euo pipefail',
+    'if [ -z "${PREFIX:-}" ]; then echo "افتح هذا الملف من تطبيق Termux"; exit 1; fi',
+    'pkg update -y',
+    'pkg install -y nodejs-lts curl',
+    `mkdir -p "${configDir}" "$HOME/.termux/boot"`,
+    `chmod 700 "${configDir}"`,
+    `cat > "${configDir}/config.sh" <<'ELWA_CONFIG'`,
+    `export QIROX_SERVER='${serverOrigin}'`,
+    `export QIROX_KEY='${agentKey}'`,
+    `export PRINTER_IP='${ip}'`,
+    `export PRINTER_PORT='${port}'`,
+    'ELWA_CONFIG',
+    `chmod 600 "${configDir}/config.sh"`,
+    `source "${configDir}/config.sh"`,
+    `curl -fsSL "$QIROX_SERVER/print-agent.cjs" -o "${configDir}/print-agent.cjs"`,
+    `chmod 600 "${configDir}/print-agent.cjs"`,
+    `cat > "$HOME/.termux/boot/elwa-print-agent" <<'ELWA_BOOT'`,
+    '#!/data/data/com.termux/files/usr/bin/bash',
+    `CONFIG="$HOME/.config/elwa-print-agent/config.sh"`,
+    '[ -r "$CONFIG" ] || exit 1',
+    '. "$CONFIG"',
+    `exec node "$HOME/.config/elwa-print-agent/print-agent.cjs" --server "$QIROX_SERVER" --ip "$PRINTER_IP" --port "$PRINTER_PORT"`,
+    'ELWA_BOOT',
+    `chmod 700 "$HOME/.termux/boot/elwa-print-agent"`,
+    'rm -f -- "$0"',
+    'echo "تم الإعداد. ثبّت Termux:Boot للتشغيل بعد إعادة تشغيل الهاتف."',
+    `exec node "${configDir}/print-agent.cjs" --server "$QIROX_SERVER" --ip "$PRINTER_IP" --port "$PRINTER_PORT"`,
+    '',
+  ].join('\n');
+}
+
 export default function PrinterSettingsPanel() {
   const { toast } = useToast();
   const tc = useTranslate();
@@ -1034,8 +1069,8 @@ export default function PrinterSettingsPanel() {
               <p className="font-semibold">{tc("ملاحظة مهمة لمستخدمي iPad", "Important for iPad users")}</p>
               <p>
                 {tc(
-                  "Chrome وEdge وSafari على iPad لا تتيح للصفحة الطباعة المباشرة عبر USB أو Bluetooth أو اتصال LAN الخام. وضع «المتصفح» يعمل فقط مع طابعة تظهر في AirPrint. وضع «الطابور السحابي» يحتاج عامل طباعة على كمبيوتر آخر داخل شبكة الكافيه؛ الآيباد وحده لا يشغّله.",
-                  "Chrome, Edge, and Safari on iPad cannot print directly over USB, Bluetooth, or raw LAN TCP. Browser mode only works with a printer listed in AirPrint. Cloud Queue needs a print agent on another computer on the cafe network; the iPad cannot run it by itself.",
+                  "المتصفح على iPad يرسل أمر الطباعة إلى الطابور؛ هاتف Android على شبكة الطابعة يسحبه ويطبعه. لا يحتاج iPad إلى اتصال مباشر بالطابعة.",
+                  "The iPad browser sends print jobs to the queue; an Android phone on the printer network retrieves and prints them. The iPad does not need direct printer access.",
                 )}
               </p>
               {settings.mode === 'relay' && (
@@ -1052,7 +1087,7 @@ export default function PrinterSettingsPanel() {
               <Label className="text-sm font-medium">{tc("وضع الطباعة", "Print Mode")}</Label>
               <p className="text-xs text-muted-foreground mt-0.5">
                 {settings.mode === 'queue'
-                  ? tc("طابور سحابي عبر كمبيوتر محلي — مناسب لـ iPad وطابعات LAN", "Cloud Queue via a local PC — for iPad and LAN printers")
+                  ? tc("طابور سحابي عبر هاتف Android أو كمبيوتر محلي", "Cloud Queue via an Android phone or local computer")
                   : settings.mode === 'network'
                     ? tc("طابعة شبكية (LAN/WiFi) — ProPos، Epson، Xprinter", "Network printer (LAN/WiFi) — ProPos, Epson, Xprinter")
                     : settings.mode === 'bluetooth'
@@ -1097,14 +1132,14 @@ export default function PrinterSettingsPanel() {
               <div className="space-y-3 bg-green-50 border border-green-300 rounded-lg p-3">
                 <div className="flex items-center gap-2 text-sm font-semibold text-green-800">
                   <Network className="w-4 h-4" />
-                  {tc("الطابور السحابي — يعمل مع iPad وطابعة LAN عبر كمبيوتر محلي", "Cloud Queue — works with iPad and LAN printers through a local PC")}
+                  {tc("الطابور السحابي — الآيباد يرسل والهاتف يطبع", "Cloud Queue — the iPad sends, the phone prints")}
                 </div>
 
                 <div className="text-xs text-green-700 bg-green-100 rounded-lg p-2.5 space-y-1">
                   <p className="font-bold">{tc("🚀 كيف يعمل؟", "🚀 How it works?")}</p>
                   <p>{tc(
-                    "يرسل iPad أمر الطباعة للسيرفر؛ عامل الطباعة على كمبيوتر Windows داخل شبكة الكافيه يسحبه ويرسله للطابعة. يجب إدخال عنوان IP الفعلي للطابعة وتشغيل الكمبيوتر.",
-                    "The iPad sends the job to the server; the agent on a Windows PC in the cafe network pulls it and sends it to the printer. Enter the printer's verified IP and keep the PC running."
+                    "يرسل الآيباد الطلب للنظام، وهاتف Android المتصل بشبكة الطابعة يسحبه ويطبعه تلقائيًا. افتح هذه الإعدادات من الهاتف لتنزيل ملف الإعداد الجاهز؛ يلزم IP الطابعة الصحيح.",
+                    "The iPad sends the job to Elwa, and an Android phone on the printer's network retrieves and prints it. Open these settings on the phone to download the ready setup file; the printer's correct IP is required."
                   )}</p>
                 </div>
 
@@ -1135,7 +1170,57 @@ export default function PrinterSettingsPanel() {
                   </div>
                 </div>
 
-                {/* Download pre-configured agent */}
+                {/* Android Termux setup */}
+                <div className="bg-white border-2 border-green-300 rounded-xl p-3 space-y-2">
+                  <p className="text-sm font-bold text-green-900">
+                    {tc("إعداد هاتف Android (Termux):", "Set up an Android phone (Termux):")}
+                  </p>
+                  <p className="text-xs text-green-700">
+                    {tc("على الهاتف: افتح Termux ونفّذ termux-setup-storage مرة واحدة، ثم افتح هذه الصفحة واضغط الزر وشغّل: bash ~/storage/downloads/elwa-android-print-setup.sh. اضبط الطابور وIP نفسه على iPad، واترك الهاتف والطابعة على شبكة واحدة مع السماح لـTermux بالعمل في الخلفية. للتشغيل بعد إعادة التشغيل ثبّت Termux:Boot وافتحه مرة.", "On the phone, open Termux and run termux-setup-storage once. Open this page, download the setup, and run: bash ~/storage/downloads/elwa-android-print-setup.sh. Set Queue mode and the same IP on the iPad; keep both devices on the same network and allow Termux background activity. For reboot startup, install and open Termux:Boot once.")}
+                  </p>
+                  <button
+                    onClick={async () => {
+                      try {
+                        const ip = settings.networkIp?.trim() || "";
+                        const octets = ip.split('.').map(part => /^\d{1,3}$/.test(part) ? Number(part) : NaN);
+                        const [a, b] = octets;
+                        const validIp = octets.length === 4 && octets.every(part => Number.isInteger(part) && part >= 0 && part <= 255) &&
+                          (a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168));
+                        const port = Number(settings.networkPort || 9100);
+                        if (!validIp || !Number.isInteger(port) || port < 1 || port > 65535) {
+                          alert(tc("أدخل IP الطابعة الصحيح والبورت (عادة 9100) أولاً.", "Enter the printer's correct IP and port (usually 9100) first."));
+                          return;
+                        }
+                        const res = await fetch('/api/print-queue/agent-info');
+                        if (!res.ok) throw new Error(tc("سجّل الدخول بحساب مدير على الهاتف أولاً.", "Sign in with a manager account on the phone first."));
+                        const { serverUrl, agentKey } = await res.json();
+                        const parsed = new URL(serverUrl);
+                        if (parsed.protocol !== 'https:' || parsed.username || parsed.password ||
+                            !/^[A-Za-z0-9._~-]{16,256}$/.test(agentKey || '')) {
+                          throw new Error(tc("تعذر التحقق من إعداد الاتصال الآمن.", "Could not validate the secure agent configuration."));
+                        }
+                        const file = new Blob([createTermuxPrintAgentInstaller(parsed.origin, agentKey, ip, port)], { type: 'text/x-shellscript' });
+                        const url = URL.createObjectURL(file);
+                        const link = document.createElement('a');
+                        link.href = url;
+                        link.download = 'elwa-android-print-setup.sh';
+                        link.click();
+                        setTimeout(() => URL.revokeObjectURL(url), 1000);
+                      } catch (e: any) {
+                        alert(tc("تعذر إعداد ملف الهاتف: " + e.message, "Could not prepare phone setup: " + e.message));
+                      }
+                    }}
+                    className="flex items-center justify-center gap-2 w-full py-2.5 bg-green-700 hover:bg-green-800 text-white rounded-lg text-sm font-bold transition-colors"
+                    data-testid="button-download-termux-print-agent"
+                  >
+                    ⬇ {tc("تحميل إعداد هاتف Android", "Download Android setup")}
+                  </button>
+                  <p className="text-[11px] text-green-600 text-center">
+                    {tc("الملف يحفظ مفتاح الربط داخل مساحة Termux الخاصة فقط ويحذف ملف التثبيت بعد تشغيله.", "The installer stores the pairing key in Termux's private storage and deletes itself after running.")}
+                  </p>
+                </div>
+
+                {/* Download pre-configured Windows agent */}
                 <div className="bg-white border-2 border-green-300 rounded-xl p-3 space-y-2">
                   <p className="text-sm font-bold text-green-900">
                     {tc("إعداد لمرة واحدة على كمبيوتر Windows داخل الكافيه:", "One-time setup on a Windows PC in the cafe:")}
