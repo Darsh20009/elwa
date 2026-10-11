@@ -45,5 +45,5 @@ BUSINESS_CONFIG_JSON = "{\"businessName\":\"إلوة للقهوة المختصة
 MONGODB_DATABASE = "elwa"
 PROJECT_PLAN_TIER = "lite"
 TENANT_ID = "elwa-specialty-coffee"
-QIROX_PLATFORM_URL = "https://qiroxstudio.online/api/v1/projects/6abe90906f3a125e9cee02f9/whatsapp"
-QIROX_WHATSAPP_API_PATH = "qrx_project_whatsapp_41f10e72a0da0b052cf59fd715e1d3097b7b88fe032462a522e9fada82c7f7c4"
+QIROX_PLATFORM_URL = "https://qiroxstudio.online"
+QIROX_WHATSAPP_API_PATH = "/api/v1/projects/6abe90906f3a125e9cee02f9/whatsapp"

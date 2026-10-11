@@ -118,8 +118,10 @@ export default function PosSystem() {
   // Active branch: admin/owner uses selected, others use their assigned branch
   const activeBranchId = isAdminOwner ? posBranchId : (employee?.branchId || null);
   const receiptPrintConfig = useReceiptPrintConfig(activeBranchId?.toString());
-  // Fail closed while config loads: USB bridge orders must not enter legacy printing.
-  const legacyPrintAllowed = receiptPrintConfig.data?.adapter === "browser";
+  const [printerMode] = useState(() => loadPrinterSettings().mode);
+  // The shared cloud queue must remain available when the Android phone agent
+  // is the printer bridge, even if this branch previously used the CUPS bridge.
+  const legacyPrintAllowed = receiptPrintConfig.data?.adapter === "browser" || printerMode === "queue";
   const [showBranchSelector, setShowBranchSelector] = useState(false);
 
   const { data: allBranches = [] } = useQuery<any[]>({
@@ -192,7 +194,6 @@ export default function PosSystem() {
   const [showPOSSettings, setShowPOSSettings] = useState(false);
   const [showPrinterSettings, setShowPrinterSettings] = useState(false);
   const [showSoundSettings, setShowSoundSettings] = useState(false);
-  const [printerMode] = useState(() => loadPrinterSettings().mode);
   // Single source of truth: printer settings ("qirox-printer-settings").
   // The legacy "pos-auto-print" key is no longer read to avoid it going stale
   // and silently overriding whatever the user just set in Printer Settings.
@@ -1833,7 +1834,7 @@ export default function PosSystem() {
   };
 
   const handlePrintReceipt = async () => {
-    if (receiptPrintConfig.data?.adapter === "usb-bridge") {
+    if (receiptPrintConfig.data?.adapter === "usb-bridge" && printerMode !== "queue") {
       setShowReceiptPreview(false);
       setShowReceiptDialog(true);
       return;
@@ -1866,7 +1867,7 @@ export default function PosSystem() {
     try { await openReceiptPreviewWindow(data); } catch (e) { console.error(e); }
   };
   const handlePrintCustomerOnly = async () => {
-    if (receiptPrintConfig.data?.adapter === "usb-bridge") {
+    if (receiptPrintConfig.data?.adapter === "usb-bridge" && printerMode !== "queue") {
       setShowReceiptPreview(false);
       setShowReceiptDialog(true);
       return;
@@ -1889,7 +1890,7 @@ export default function PosSystem() {
     try { await printReceiptSection(data, 'kitchen'); } catch (e) { console.error(e); }
   };
   const handlePrintBoth = async () => {
-    if (receiptPrintConfig.data?.adapter === "usb-bridge") {
+    if (receiptPrintConfig.data?.adapter === "usb-bridge" && printerMode !== "queue") {
       setShowReceiptPreview(false);
       setShowReceiptDialog(true);
       return;
@@ -2720,7 +2721,6 @@ export default function PosSystem() {
                       {!isLookingUpCustomer && customerLookupFound === false && <User className="w-3.5 h-3.5 text-orange-400" />}
                     </div>
                   </div>
-                  <PosWhatsappSettings canEdit={isAdminOwner} />
                   {orderType === "dine_in" && (
                     <Input
                       placeholder={t('pos.table_number')}
@@ -4603,7 +4603,7 @@ export default function PosSystem() {
         </Dialog>
 
         <Dialog open={showPOSSettings} onOpenChange={setShowPOSSettings}>
-          <DialogContent className="max-w-md" dir={dir}>
+          <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto" dir={dir}>
             <DialogHeader>
               <DialogTitle className="text-right font-bold text-xl">{t('pos.settings_title')}</DialogTitle>
             </DialogHeader>
@@ -4637,6 +4637,12 @@ export default function PosSystem() {
                   <svg className="w-4 h-4 text-muted-foreground group-hover:text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
                 </div>
               </button>
+              {isAdminOwner && (
+                <>
+                  <Separator />
+                  <PosWhatsappSettings canEdit={isAdminOwner} />
+                </>
+              )}
               <Separator />
               <div className="flex items-center justify-between">
                 <Label htmlFor="auto-print" className="text-sm font-bold cursor-pointer">{t('pos.auto_print')}</Label>
