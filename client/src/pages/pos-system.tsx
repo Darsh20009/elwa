@@ -121,7 +121,8 @@ export default function PosSystem() {
   const [printerMode] = useState(() => loadPrinterSettings().mode);
   // The shared cloud queue must remain available when the Android phone agent
   // is the printer bridge, even if this branch previously used the CUPS bridge.
-  const legacyPrintAllowed = receiptPrintConfig.data?.adapter === "browser" || printerMode === "queue";
+  const localPrinterMode = printerMode === "webusb" || printerMode === "bluetooth";
+  const legacyPrintAllowed = receiptPrintConfig.data?.adapter === "browser" || printerMode === "queue" || localPrinterMode;
   const [showBranchSelector, setShowBranchSelector] = useState(false);
 
   const { data: allBranches = [] } = useQuery<any[]>({
@@ -253,6 +254,7 @@ export default function PosSystem() {
   // ── RealtimeEngine WebSocket (replaces legacy useOrderWebSocket) ─────────────
   const { connected: wsConnected } = useRealtimeStatus();
   const { send: rtSend } = useRealtimeSend();
+  const autoPrintedOrderIdsRef = useRef<Set<string>>(new Set());
 
   // Register this terminal as "pos" with its branchId so the server can filter broadcasts per branch
   useEffect(() => {
@@ -297,48 +299,69 @@ export default function PosSystem() {
           amount: order?.totalAmount || 0,
         }),
       });
-      const printerSettings = loadPrinterSettings();
-      if (legacyPrintAllowed && printerSettings.autoPrint && order?.items?.length > 0) {
-        const onlineOrderType = order.orderType || 'online';
-        const onlineOrderTypeName =
-          onlineOrderType === 'dine_in'    || onlineOrderType === 'dine-in'    ? 'محلي'   :
-          onlineOrderType === 'takeaway'   || onlineOrderType === 'pickup'     ? 'سفري'   :
-          onlineOrderType === 'delivery'                                        ? 'توصيل'  :
-          onlineOrderType === 'car_pickup' || onlineOrderType === 'car-pickup' ? 'سيارة'  :
-          'أونلاين';
-        const printData = {
-          orderNumber: String(order.orderNumber || order.dailyNumber || order._id?.slice(-4) || '0'),
-          customerName: order.customerName || 'عميل أونلاين',
-          customerPhone: order.customerPhone || '',
-          items: (order.items || []).map((item: any) => ({
-            coffeeItem: {
-              nameAr: item.coffeeItem?.nameAr || item.nameAr || '',
-              nameEn: item.coffeeItem?.nameEn || item.nameEn || '',
-              price: String(item.price || item.unitPrice || item.coffeeItem?.price || 0),
-            },
-            quantity: item.quantity || 1,
-            selectedSize: item.selectedSize || undefined,
-            customization: item.customization,
-          })),
-          subtotal: String(order.subtotal || (Number(order.totalAmount) / 1.15).toFixed(2)),
-          total: String(order.totalAmount || 0),
-          paymentMethod: order.paymentMethod || 'أونلاين',
-          employeeName: '',
-          tableNumber: order.tableNumber,
-          orderType: onlineOrderType as any,
-          orderTypeName: onlineOrderTypeName,
-          date: order.createdAt || new Date().toISOString(),
-        };
-        setTimeout(() => {
-          printTaxInvoice(printData, { autoPrint: true }).catch((e) => {
-            console.warn('[POS] Online order auto-print failed:', e);
-          });
-        }, 500);
-      }
     } else {
       // POS-channel orders: play a short confirmation beep so the cashier
       // knows the order registered successfully (even when they created it).
       playChannelSound('manual');
+    }
+
+    // This POS terminal can act as the branch's printer host. Orders created
+    // on another phone/POS arrive over the existing realtime connection; the
+    // tablet prints locally over its paired USB/Bluetooth printer.
+    const printerSettings = loadPrinterSettings();
+    const orderId = String(order?._id || order?.id || order?.orderNumber || '');
+    const supportsSilentLocalPrint = printerSettings.mode === 'webusb' || printerSettings.mode === 'bluetooth';
+    const shouldPrintIncomingOrder =
+      (isOnlineWebOrder || isPosOrder || isTableOrder || isCarPickup) &&
+      printerSettings.enabled &&
+      printerSettings.autoPrint &&
+      supportsSilentLocalPrint &&
+      legacyPrintAllowed &&
+      order?.items?.length > 0 &&
+      orderId &&
+      !autoPrintedOrderIdsRef.current.has(orderId);
+
+    if (shouldPrintIncomingOrder) {
+      autoPrintedOrderIdsRef.current.add(orderId);
+      if (autoPrintedOrderIdsRef.current.size > 200) {
+        const oldestId = autoPrintedOrderIdsRef.current.values().next().value;
+        if (oldestId) autoPrintedOrderIdsRef.current.delete(oldestId);
+      }
+      const incomingOrderType = order.orderType || (isPosOrder ? 'pos' : 'online');
+      const incomingOrderTypeName =
+        incomingOrderType === 'dine_in' || incomingOrderType === 'dine-in' ? 'محلي' :
+        incomingOrderType === 'takeaway' || incomingOrderType === 'pickup' ? 'سفري' :
+        incomingOrderType === 'delivery' ? 'توصيل' :
+        incomingOrderType === 'car_pickup' || incomingOrderType === 'car-pickup' ? 'سيارة' :
+        isPosOrder ? 'نقطة بيع' : 'أونلاين';
+      const printData = {
+        orderNumber: String(order.orderNumber || order.dailyNumber || orderId.slice(-4)),
+        customerName: order.customerName || 'عميل',
+        customerPhone: order.customerPhone || '',
+        items: (order.items || []).map((item: any) => ({
+          coffeeItem: {
+            nameAr: item.coffeeItem?.nameAr || item.nameAr || item.name || '',
+            nameEn: item.coffeeItem?.nameEn || item.nameEn || '',
+            price: String(item.price || item.unitPrice || item.coffeeItem?.price || 0),
+          },
+          quantity: item.quantity || 1,
+          selectedSize: item.selectedSize || undefined,
+          customization: item.customization,
+        })),
+        subtotal: String(order.subtotal || (Number(order.totalAmount) / 1.15).toFixed(2)),
+        total: String(order.totalAmount || 0),
+        paymentMethod: order.paymentMethod || (isOnlineWebOrder ? 'أونلاين' : 'نقدي'),
+        employeeName: order.employeeName || '',
+        tableNumber: order.tableNumber,
+        orderType: incomingOrderType as any,
+        orderTypeName: incomingOrderTypeName,
+        date: order.createdAt || new Date().toISOString(),
+      };
+      setTimeout(() => {
+        printTaxInvoice(printData, { autoPrint: true }).catch((error) => {
+          console.warn('[POS] Incoming order auto-print failed:', error);
+        });
+      }, 500);
     }
   });
 
@@ -1690,52 +1713,9 @@ export default function PosSystem() {
         orderType,
         notes: orderNote || undefined,
       });
-      // ✅ Defer print to avoid blocking the UI thread after checkout
-      if (legacyPrintAllowed && autoPrint) {
-        const printSnapshot = {
-          orderNumber: result.orderNumber || result.dailyNumber || result._id?.slice(-4) || '—',
-          customerName,
-          customerPhone,
-          items: orderItems.map(item => ({
-            coffeeItem: {
-              nameAr: item.coffeeItem?.nameAr || '',
-              nameEn: item.coffeeItem?.nameEn || '',
-              price: String(getPosItemUnitPrice(item)),
-            },
-            quantity: item.quantity,
-            selectedSize: item.selectedSize || undefined,
-            customization: item.customization,
-          })),
-          subtotal: subtotal.toFixed(2),
-          total: total.toFixed(2),
-          paymentMethod: PAYMENT_METHOD_LABELS[paymentMethod] || paymentMethod,
-          employeeName: employee?.fullName || t('pos.employee_fallback'),
-          tableNumber: orderType === "dine_in" ? tableNumber : undefined,
-          orderType: orderType as any,
-          orderTypeName: (
-            (orderType as string) === 'dine_in' || (orderType as string) === 'dine-in' ? 'محلي'  :
-            (orderType as string) === 'takeaway' || (orderType as string) === 'pickup' ? 'سفري' :
-            (orderType as string) === 'delivery' ? 'توصيل' :
-            (orderType as string) === 'car_pickup' || (orderType as string) === 'car-pickup' ? 'سيارة' :
-            (orderType as string) === 'online' ? 'أونلاين' :
-            (orderType as string) === 'drive_thru' ? 'درايف ثرو' : ''
-          ),
-          date: new Date().toISOString(),
-          crNumber: businessConfig?.commercialRegistration,
-          vatNumber: businessConfig?.vatNumber,
-          splitPayment: splitPaymentData,
-          cashReceived: (paymentMethod === 'cash' && splitCashAmount)
-            ? parseFloat(splitCashAmount) || undefined
-            : undefined,
-          notes: orderNote || undefined,
-        };
-        // Fire immediately — thermal path is instant, HTML fallback uses pre-warmed ZATCA QR cache.
-        // NOTE: printTaxInvoice is async — a synchronous try/catch around an
-        // un-awaited call cannot catch its rejections, so use .catch() instead.
-        printTaxInvoice(printSnapshot, { autoPrint: true }).catch((e) => {
-          console.warn('[POS] Auto-print failed:', e);
-        });
-      }
+      // Confirmed online POS orders are auto-printed by the designated local
+      // printer terminal when its realtime "new_order" event arrives. This
+      // avoids printing twice on that terminal.
       broadcastToDisplay("payment_success", {
         orderNumber: result.orderNumber || result.dailyNumber || '',
         items: orderItems.map(i => ({ nameAr: i.coffeeItem.nameAr, price: getPosItemUnitPrice(i), quantity: i.quantity })),
