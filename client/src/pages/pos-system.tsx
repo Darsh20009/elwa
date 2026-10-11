@@ -1657,10 +1657,12 @@ export default function PosSystem() {
           .then((delivery) => {
             toast({
               title: tc("تم إرسال تفاصيل الطلب عبر QIROX", "Order details sent through QIROX"),
-              description: delivery.invoicePdfAttached
-                ? tc("وصلت التفاصيل والفاتورة PDF للطرفين.", "Details and PDF invoice were sent to both recipients.")
-                : tc("وصلت التفاصيل للعميل ورقم الاستقبال، لكن QIROX الحالي لم يرفق ملف PDF.", "Details reached the customer and receiver, but the current QIROX route did not attach a PDF."),
-              className: delivery.invoicePdfAttached ? "bg-green-600 text-white" : "bg-orange-600 text-white",
+              description: delivery.delivery.customer === "skipped"
+                ? tc("قبل QIROX إرسال الفاتورة لرقم الاستقبال فقط؛ أضف جوال العميل لإرسالها له.", "QIROX accepted the invoice for the receiver only; add the customer's phone to send it to them.")
+                : delivery.delivery.receiver === "skipped"
+                  ? tc("قبل QIROX إرسال الفاتورة للعميل فقط؛ رقم استقبال الطلبات غير مضبوط.", "QIROX accepted the invoice for the customer only; the order receiver number is not configured.")
+                  : tc("قبل QIROX رسالة الطلب ومرفق الفاتورة للطرفين.", "QIROX accepted the order message and invoice attachment for both recipients."),
+              className: delivery.delivery.customer === "sent" && delivery.invoicePdfAttached ? "bg-green-600 text-white" : "bg-orange-600 text-white",
             });
           })
           .catch((error) => {

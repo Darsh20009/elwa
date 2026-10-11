@@ -10230,10 +10230,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ? await BusinessConfigModel.findOne({ tenantId }).select("posOrdersWhatsappReceiver tradeNameAr tradeNameEn vatNumber commercialRegistration vatPercentage currency").lean()
         : null;
       const receiverRecipient = normalizeCustomerPhone(String((businessConfig as any)?.posOrdersWhatsappReceiver || ""));
-      if (!receiverRecipient) {
+      if (!customerRecipient && !receiverRecipient) {
         return res.status(409).json({
-          error: "احفظ رقم استقبال الطلبات في إعدادات POS قبل إرسال واتساب",
-          code: "POS_WHATSAPP_RECEIVER_NOT_CONFIGURED",
+          error: "أدخل رقم جوال العميل أو احفظ رقم استقبال الطلبات لإرسال الفاتورة عبر واتساب",
+          code: "POS_WHATSAPP_RECIPIENT_NOT_CONFIGURED",
         });
       }
       const total = Number(serializedOrder.totalAmount);
@@ -10306,7 +10306,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ...receiverMessageParts,
       ]);
       let customerDelivery: "sent" | "failed" | "skipped" = customerRecipient ? "failed" : "skipped";
-      let receiverDelivery: "sent" | "failed" = "failed";
+      let receiverDelivery: "sent" | "failed" | "skipped" = receiverRecipient ? "failed" : "skipped";
       let customerError: unknown;
       let receiverError: unknown;
 
@@ -10325,7 +10325,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           customerError = error;
         }
       }
-      if (!sameRecipient) {
+      if (receiverRecipient && !sameRecipient) {
         try {
           await sendSaasWhatsApp({
             to: receiverRecipient,
