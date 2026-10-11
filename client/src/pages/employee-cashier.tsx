@@ -389,7 +389,7 @@ export default function EmployeeCashier() {
       // Show customer details for confirmation
       const pmLabels: Record<string, string> = { cash: tc("نقداً","Cash"), pos: tc("شبكة","Network"), "pos-network": tc("شبكة","Network"), "qahwa-card": tc("بطاقة إلوة","Elwa Card"), "loyalty-card": tc("بطاقة ولاء","Loyalty Card") };
       const pmLabel = pmLabels[orderData.paymentMethod] || tc("شبكة","Network");
-      const confirmMessage = `تأكيد الدفع (${pmLabel}) للعميل: ${orderData.customerInfo.customerName}\nرقم الجوال: ${orderData.customerInfo.phoneNumber}\nالإجمالي: ${orderData.totalAmount} ريال`;
+      const confirmMessage = `تأكيد الدفع (${pmLabel}) للعميل: ${orderData.customerInfo.customerName || "بدون اسم"}\nرقم الجوال: ${orderData.customerInfo.phoneNumber || "غير مسجل"}\nالإجمالي: ${orderData.totalAmount} ريال`;
       if (!window.confirm(confirmMessage)) {
         throw new Error("تم إلغاء تأكيد الدفع");
       }
@@ -991,18 +991,10 @@ export default function EmployeeCashier() {
      });
      return;
    }
-    if (!customerName.trim()) {
+     if (customerPhone.trim() && !normalizeCustomerPhone(customerPhone)) {
       toast({
-        title: tc("اسم العميل مطلوب", "Customer name required"),
-        description: tc("أدخل اسم العميل قبل إتمام الطلب", "Enter the customer's name before placing the order"),
-        variant: "destructive",
-      });
-      return;
-    }
-    if (!normalizeCustomerPhone(customerPhone)) {
-      toast({
-        title: tc("رقم جوال العميل مطلوب", "Customer phone required"),
-        description: tc("أدخل رقم جوال صالحاً قبل إتمام الطلب", "Enter a valid customer phone number before placing the order"),
+         title: tc("رقم الجوال غير صحيح", "Invalid phone number"),
+         description: tc("اترك الجوال فارغاً أو أدخل رقماً صحيحاً لإرسال الفاتورة واتساب", "Leave the phone blank or enter a valid number to send the invoice by WhatsApp"),
         variant: "destructive",
       });
       return;
@@ -1533,7 +1525,6 @@ export default function EmployeeCashier() {
  onChange={(e) => setCustomerName(e.target.value)}
  placeholder={tc("أدخل اسم العميل","Enter customer name")}
  className="bg-gray-50 border-gray-300 text-gray-900 text-right"
-  required
  data-testid="input-customer-name"
  />
  </div>
@@ -1551,7 +1542,6 @@ export default function EmployeeCashier() {
  className="bg-gray-50 border-gray-300 text-gray-900 text-right flex-1"
   type="tel"
   inputMode="tel"
-  required
  data-testid="input-customer-phone"
  />
  <Dialog open={showBarcodeScanner} onOpenChange={setShowBarcodeScanner}>

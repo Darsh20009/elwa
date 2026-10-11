@@ -1431,12 +1431,12 @@ export default function PosSystem() {
 
   const handleCheckout = async () => {
     if (orderItems.length === 0) return;
-    if (!customerName.trim() || !normalizeCustomerPhone(customerPhone)) {
+    if (customerPhone.trim() && !normalizeCustomerPhone(customerPhone)) {
       setShowCustomerInfo(true);
       toast({
         variant: "destructive",
-        title: tc("بيانات العميل مطلوبة", "Customer details required"),
-        description: tc("أدخل اسم العميل ورقم جوال صالحاً قبل إتمام الطلب.", "Enter the customer's name and a valid phone number before placing the order."),
+        title: tc("رقم الجوال غير صحيح", "Invalid phone number"),
+        description: tc("اترك الجوال فارغاً أو أدخل رقماً صحيحاً لإرسال الفاتورة واتساب.", "Leave the phone blank or enter a valid number to send the invoice by WhatsApp."),
       });
       return;
     }
@@ -2681,7 +2681,6 @@ export default function PosSystem() {
                     value={customerName}
                     onChange={(e) => setCustomerName(e.target.value)}
                     className="h-9 text-sm"
-                    required
                     data-testid="input-pos-customer-name"
                   />
                   <div className="relative">
@@ -2696,7 +2695,6 @@ export default function PosSystem() {
                       dir="ltr"
                       type="tel"
                       inputMode="tel"
-                      required
                       data-testid="input-pos-customer-phone"
                     />
                     <div className="absolute inset-y-0 right-2 flex items-center pointer-events-none">

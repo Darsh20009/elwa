@@ -2,7 +2,7 @@ export interface PosWhatsappDelivery {
   ok: boolean;
   provider: "QIROX";
   delivery: {
-    customer: "sent" | "failed";
+    customer: "sent" | "failed" | "skipped";
     receiver: "sent" | "failed";
   };
   invoicePdfAttached: boolean;

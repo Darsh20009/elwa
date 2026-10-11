@@ -1278,19 +1278,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
           }
         }
         const customerName = String(customerInfo?.customerName || body.customerName || "").trim();
-        const customerPhoneInput = customerInfo?.phoneNumber || customerInfo?.customerPhone || body.customerPhone || "";
+        const customerPhoneInput = customerInfo?.phoneNumber || customerInfo?.customerPhone || customerInfo?.phone || body.customerPhone || "";
         const customerPhone = normalizeCustomerPhone(String(customerPhoneInput));
-        if (!customerName || !customerPhone) {
+        if (customerPhoneInput && !customerPhone) {
           return res.status(400).json({
-            error: "اسم العميل ورقم جواله الصحيح مطلوبان لطلب نقطة البيع",
-            code: "POS_CUSTOMER_REQUIRED",
+            error: "رقم جوال العميل غير صالح",
+            code: "POS_CUSTOMER_PHONE_INVALID",
           });
         }
-        body.customerName = customerName;
+        body.customerName = customerName || "عميل";
         body.customerPhone = customerPhone;
         body.customerInfo = {
           ...(customerInfo && typeof customerInfo === "object" && !Array.isArray(customerInfo) ? customerInfo : {}),
-          customerName,
+          customerName: customerName || "عميل",
           customerPhone,
           phoneNumber: customerPhone,
         };
@@ -10219,13 +10219,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
           customerInfo = {};
         }
       }
-      const customerPhoneInput = customerInfo?.phoneNumber || customerInfo?.customerPhone || serializedOrder.customerPhone;
+      const customerPhoneInput = customerInfo?.phoneNumber || customerInfo?.customerPhone || customerInfo?.phone || serializedOrder.customerPhone;
       const customerRecipient = normalizeCustomerPhone(String(customerPhoneInput || ""));
-      if (!customerRecipient) return res.status(400).json({ error: "رقم جوال العميل غير صالح" });
+      if (customerPhoneInput && !customerRecipient) return res.status(400).json({ error: "رقم جوال العميل غير صالح" });
 
       const orderNumber = String(serializedOrder.orderNumber || req.params.orderNumber);
-      const customerName = String(customerInfo?.customerName || customerInfo?.name || serializedOrder.customerName || "").trim().slice(0, 80);
-      if (!customerName) return res.status(400).json({ error: "اسم العميل غير موجود في الطلب" });
+      const customerName = String(customerInfo?.customerName || customerInfo?.name || serializedOrder.customerName || "").trim().slice(0, 80) || "عميل";
       const tenantId = orderTenantId || scopedTenantId;
       const businessConfig = tenantId
         ? await BusinessConfigModel.findOne({ tenantId }).select("posOrdersWhatsappReceiver tradeNameAr tradeNameEn vatNumber commercialRegistration vatPercentage currency").lean()
@@ -10294,7 +10293,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const customerMessage = trimMessage(customerMessageParts);
       const receiverMessage = trimMessage(receiverMessageParts);
       const orderId = String(serializedOrder.id || order._id || orderNumber);
-      const sameRecipient = customerRecipient === receiverRecipient;
+      const sameRecipient = Boolean(customerRecipient && customerRecipient === receiverRecipient);
       const invoicePdfUrl = createPosInvoiceUrl(orderNumber, tenantId);
       const invoiceAttachments = [{
         url: invoicePdfUrl,
@@ -10306,23 +10305,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
         "شكراً لطلبك من إلوة.",
         ...receiverMessageParts,
       ]);
-      let customerDelivery: "sent" | "failed" = "failed";
+      let customerDelivery: "sent" | "failed" | "skipped" = customerRecipient ? "failed" : "skipped";
       let receiverDelivery: "sent" | "failed" = "failed";
       let customerError: unknown;
       let receiverError: unknown;
 
-      try {
-        await sendSaasWhatsApp({
-          to: customerRecipient,
-          clientName: customerName,
-          message: sameRecipient ? sameRecipientMessage : customerMessage,
-          idempotencyKey: `pos-order-customer-${orderId}`,
-          attachments: invoiceAttachments,
-        });
-        customerDelivery = "sent";
-        if (sameRecipient) receiverDelivery = "sent";
-      } catch (error) {
-        customerError = error;
+      if (customerRecipient) {
+        try {
+          await sendSaasWhatsApp({
+            to: customerRecipient,
+            clientName: customerName,
+            message: sameRecipient ? sameRecipientMessage : customerMessage,
+            idempotencyKey: `pos-order-customer-${orderId}`,
+            attachments: invoiceAttachments,
+          });
+          customerDelivery = "sent";
+          if (sameRecipient) receiverDelivery = "sent";
+        } catch (error) {
+          customerError = error;
+        }
       }
       if (!sameRecipient) {
         try {
@@ -10345,7 +10346,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(503).json({
           error: "تعذر إرسال إحدى رسائل QIROX. الطلب محفوظ ويمكن إعادة المحاولة.",
           delivery,
-          invoicePdfAttached: false,
+          invoicePdfAttached: customerDelivery === "sent",
           receiverInvoicePdfAttached: (sameRecipient ? customerDelivery : receiverDelivery) === "sent",
         });
       }
