@@ -456,13 +456,13 @@ export default function EmployeeCashier() {
     try {
       const delivery = await sendPosOrderWhatsApp(String(order.orderNumber));
      toast({
-        title: tc("تم إرسال تفاصيل الطلب عبر QIROX", "Order details sent through QIROX"),
+         title: tc("قبل QIROX طلب الإرسال", "QIROX accepted the send request"),
         description: delivery.delivery.customer === "skipped"
-          ? tc("قبل QIROX إرسال الفاتورة لرقم الاستقبال فقط؛ أضف جوال العميل لإرسالها له.", "QIROX accepted the invoice for the receiver only; add the customer's phone to send it to them.")
+           ? tc("قُبل طلب الإرسال لرقم الاستقبال فقط؛ أضف جوال العميل لإرسال الفاتورة له. القبول لا يؤكد وصول ملف PDF.", "The receiver request was accepted only; add the customer's phone to send the invoice to them. Acceptance does not confirm PDF delivery.")
           : delivery.delivery.receiver === "skipped"
-            ? tc("قبل QIROX إرسال الفاتورة للعميل فقط؛ رقم استقبال الطلبات غير مضبوط.", "QIROX accepted the invoice for the customer only; the order receiver number is not configured.")
-            : tc("قبل QIROX رسالة الطلب ومرفق الفاتورة للطرفين.", "QIROX accepted the order message and invoice attachment for both recipients."),
-        className: delivery.delivery.customer === "sent" && delivery.invoicePdfAttached ? "bg-green-600 text-white" : "bg-orange-600 text-white",
+             ? tc("قُبل طلب رسالة العميل ورابط الفاتورة. رقم استقبال الطلبات غير مضبوط؛ والقبول لا يؤكد وصول ملف PDF.", "QIROX accepted the customer's message and invoice link. The receiver number is not configured; acceptance does not confirm PDF delivery.")
+             : tc("قُبل طلب إرسال الرسالة ورابط الفاتورة للطرفين. راجع سجل QIROX لتأكيد التسليم الفعلي للـPDF.", "QIROX accepted the message and invoice-link requests for both recipients. Check QIROX delivery logs to confirm the PDF actually arrived."),
+         className: "bg-orange-600 text-white",
       });
     } catch (error) {
       toast({

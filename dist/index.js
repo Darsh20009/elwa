@@ -22105,16 +22105,16 @@ async function registerRoutes(app2) {
         return res.status(503).json({
           error: "\u062A\u0639\u0630\u0631 \u0625\u0631\u0633\u0627\u0644 \u0625\u062D\u062F\u0649 \u0631\u0633\u0627\u0626\u0644 QIROX. \u0627\u0644\u0637\u0644\u0628 \u0645\u062D\u0641\u0648\u0638 \u0648\u064A\u0645\u0643\u0646 \u0625\u0639\u0627\u062F\u0629 \u0627\u0644\u0645\u062D\u0627\u0648\u0644\u0629.",
           delivery,
-          invoicePdfAttached: customerDelivery === "sent",
-          receiverInvoicePdfAttached: (sameRecipient ? customerDelivery : receiverDelivery) === "sent"
+          invoicePdfAcceptedByQirox: false,
+          receiverInvoicePdfAcceptedByQirox: false
         });
       }
       return res.json({
         ok: true,
         provider: "QIROX",
         delivery,
-        invoicePdfAttached: customerDelivery === "sent",
-        receiverInvoicePdfAttached: (sameRecipient ? customerDelivery : receiverDelivery) === "sent"
+        invoicePdfAcceptedByQirox: Boolean(customerRecipient && customerDelivery === "sent"),
+        receiverInvoicePdfAcceptedByQirox: Boolean(receiverRecipient && (sameRecipient ? customerDelivery : receiverDelivery) === "sent")
       });
     } catch (error) {
       console.error("[WhatsApp] Order confirmation failed:", error instanceof Error ? error.message : "unknown error");

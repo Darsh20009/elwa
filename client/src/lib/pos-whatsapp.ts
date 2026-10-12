@@ -3,11 +3,11 @@ import { apiRequest } from "@/lib/queryClient";
 export interface PosWhatsappDelivery {
   ok: boolean;
   provider: "QIROX";
+  invoicePdfAcceptedByQirox: boolean;
   delivery: {
     customer: "sent" | "failed" | "skipped";
     receiver: "sent" | "failed" | "skipped";
   };
-  invoicePdfAttached: boolean;
 }
 
 export async function sendPosOrderWhatsApp(orderNumber: string): Promise<PosWhatsappDelivery> {

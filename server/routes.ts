@@ -10350,16 +10350,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(503).json({
           error: "تعذر إرسال إحدى رسائل QIROX. الطلب محفوظ ويمكن إعادة المحاولة.",
           delivery,
-          invoicePdfAttached: customerDelivery === "sent",
-          receiverInvoicePdfAttached: (sameRecipient ? customerDelivery : receiverDelivery) === "sent",
+          invoicePdfAcceptedByQirox: false,
+          receiverInvoicePdfAcceptedByQirox: false,
         });
       }
       return res.json({
         ok: true,
         provider: "QIROX",
         delivery,
-        invoicePdfAttached: customerDelivery === "sent",
-        receiverInvoicePdfAttached: (sameRecipient ? customerDelivery : receiverDelivery) === "sent",
+        invoicePdfAcceptedByQirox: Boolean(customerRecipient && customerDelivery === "sent"),
+        receiverInvoicePdfAcceptedByQirox: Boolean(receiverRecipient && (sameRecipient ? customerDelivery : receiverDelivery) === "sent"),
       });
     } catch (error) {
       console.error("[WhatsApp] Order confirmation failed:", error instanceof Error ? error.message : "unknown error");
