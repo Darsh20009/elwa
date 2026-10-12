@@ -503,6 +503,7 @@ app.use((req, res, next) => {
   if (!req.path.startsWith('/api') && !req.path.startsWith('/employee') && !req.path.startsWith('/pos')) {
     return next();
   }
+  if (req.path === '/api/client-cookie-reset') return next();
   const sess = req.session as any;
   if (sess && sess.employee && sess._sv !== SESSION_VERSION) {
     // Old session — destroy it and clear the cookie
@@ -511,6 +512,17 @@ app.use((req, res, next) => {
     return res.status(401).json({ error: 'session_expired', message: 'جلسة منتهية — يرجى تسجيل الدخول مجدداً' });
   }
   next();
+});
+
+app.post('/api/client-cookie-reset', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.clearCookie('cluny.sid', {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+    path: '/',
+  });
+  return res.status(204).end();
 });
 
 // Session debug middleware — only active in development

@@ -37343,6 +37343,7 @@ app.use((req, res, next) => {
   if (!req.path.startsWith("/api") && !req.path.startsWith("/employee") && !req.path.startsWith("/pos")) {
     return next();
   }
+  if (req.path === "/api/client-cookie-reset") return next();
   const sess = req.session;
   if (sess && sess.employee && sess._sv !== SESSION_VERSION2) {
     req.session.destroy(() => {
@@ -37351,6 +37352,16 @@ app.use((req, res, next) => {
     return res.status(401).json({ error: "session_expired", message: "\u062C\u0644\u0633\u0629 \u0645\u0646\u062A\u0647\u064A\u0629 \u2014 \u064A\u0631\u062C\u0649 \u062A\u0633\u062C\u064A\u0644 \u0627\u0644\u062F\u062E\u0648\u0644 \u0645\u062C\u062F\u062F\u0627\u064B" });
   }
   next();
+});
+app.post("/api/client-cookie-reset", (_req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.clearCookie("cluny.sid", {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+    path: "/"
+  });
+  return res.status(204).end();
 });
 app.use((req, res, next) => {
   if (process.env.NODE_ENV !== "production" && process.env.DEBUG_SESSION === "true") {

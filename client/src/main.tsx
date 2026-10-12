@@ -90,6 +90,41 @@ const CLIENT_RESET_VERSION = "2026-04-21-v2-logo";
   } catch {}
 })();
 
+// Clear only the old browser session cookie once after this release. Keep
+// local employee restore data, customer data, offline orders, and app caches.
+const CLIENT_COOKIE_RESET_VERSION = "2026-10-12-v1";
+(function clearOldSessionCookieOnce() {
+  if (previewBase) return;
+  const key = "__qirox_cookie_reset_version";
+  try {
+    if (localStorage.getItem(key) === CLIENT_COOKIE_RESET_VERSION) return;
+    const host = window.location.hostname;
+    const domains = ["", host, "." + host];
+    const paths = ["/", window.location.pathname];
+    document.cookie.split(";").forEach((cookie) => {
+      const name = cookie.split("=")[0].trim();
+      if (!name) return;
+      domains.forEach((domain) => {
+        paths.forEach((path) => {
+          document.cookie =
+            `${name}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=${path}` +
+            (domain ? `; domain=${domain}` : "");
+        });
+      });
+    });
+    void fetch("/api/client-cookie-reset", {
+      method: "POST",
+      credentials: "include",
+      cache: "no-store",
+    }).then((response) => {
+      if (response.ok) localStorage.setItem(key, CLIENT_COOKIE_RESET_VERSION);
+      else console.warn("[client-upgrade] Session cookie reset was rejected", response.status);
+    }).catch((error) => console.warn("[client-upgrade] Could not clear the old session cookie yet", error));
+  } catch (error) {
+    console.warn("[client-upgrade] Cookie reset could not be started", error);
+  }
+})();
+
 // ── Kiosk zoom-lock safety net ──────────────────────────────────────────────
 // This is a POS/kiosk app, not a content site — pinch-zoom must never be
 // possible. The <meta viewport user-scalable=no> tag and the CSS
