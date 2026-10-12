@@ -66,7 +66,7 @@ import { InventoryEngine } from "./inventory-engine";
 import { AccountingEngine } from "./accounting-engine";
 import { ErpAccountingService } from "./erp-accounting-service";
 import { deliveryService } from "./delivery-service";
-import { requireAuth, requireManager, requireAdmin, filterByBranch, requireKitchenAccess, requireCashierAccess, requireDeliveryAccess, requirePermission, requireCustomerAuth, type AuthRequest, type CustomerAuthRequest } from "./middleware/auth";
+import { requireAuth, restoreEmployeeSessionFromHeaders, requireManager, requireAdmin, filterByBranch, requireKitchenAccess, requireCashierAccess, requireDeliveryAccess, requirePermission, requireCustomerAuth, type AuthRequest, type CustomerAuthRequest } from "./middleware/auth";
 import { logFromRequest, logAudit } from "./audit-logger";
 import { PermissionsEngine, PERMISSIONS } from "./permissions-engine";
 import { requireTenant, getTenantIdFromRequest } from "./middleware/tenant";
@@ -1258,7 +1258,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/orders", async (req, res) => {
     try {
-      const employeeRequest = Boolean((req as any).employee || (req as any).session?.employee);
+      const authRequest = req as AuthRequest;
+      if (!authRequest.employee && !authRequest.session?.employee) {
+        await restoreEmployeeSessionFromHeaders(authRequest);
+      }
+      const employeeRequest = Boolean(authRequest.employee || authRequest.session?.employee);
       if (CUSTOMER_MENU_ONLY_MODE && !employeeRequest) {
         return res.status(403).json({
           error: "المنيو للعرض فقط. يرجى الطلب من موظف الفرع.",

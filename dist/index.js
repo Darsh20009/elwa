@@ -9140,6 +9140,13 @@ async function tryRestoreFromHeaders(req, res) {
     return false;
   }
 }
+async function restoreEmployeeSessionFromHeaders(req) {
+  if (req.session?.employee) {
+    req.employee = { ...req.session.employee, tenantId: req.session.employee.tenantId || "default" };
+    return true;
+  }
+  return tryRestoreFromHeaders(req);
+}
 function requireAuth(req, res, next) {
   if (req.session.employee) {
     req.employee = { ...req.session.employee, tenantId: req.session.employee.tenantId || "default" };
@@ -14768,7 +14775,11 @@ async function registerRoutes(app2) {
   });
   app2.post("/api/orders", async (req, res) => {
     try {
-      const employeeRequest = Boolean(req.employee || req.session?.employee);
+      const authRequest = req;
+      if (!authRequest.employee && !authRequest.session?.employee) {
+        await restoreEmployeeSessionFromHeaders(authRequest);
+      }
+      const employeeRequest = Boolean(authRequest.employee || authRequest.session?.employee);
       if (CUSTOMER_MENU_ONLY_MODE && !employeeRequest) {
         return res.status(403).json({
           error: "\u0627\u0644\u0645\u0646\u064A\u0648 \u0644\u0644\u0639\u0631\u0636 \u0641\u0642\u0637. \u064A\u0631\u062C\u0649 \u0627\u0644\u0637\u0644\u0628 \u0645\u0646 \u0645\u0648\u0638\u0641 \u0627\u0644\u0641\u0631\u0639.",
@@ -14786,19 +14797,19 @@ async function registerRoutes(app2) {
           }
         }
         const customerName = String(customerInfo?.customerName || body.customerName || "").trim();
-        const customerPhoneInput = customerInfo?.phoneNumber || customerInfo?.customerPhone || body.customerPhone || "";
+        const customerPhoneInput = customerInfo?.phoneNumber || customerInfo?.customerPhone || customerInfo?.phone || body.customerPhone || "";
         const customerPhone = normalizeCustomerPhone(String(customerPhoneInput));
-        if (!customerName || !customerPhone) {
+        if (customerPhoneInput && !customerPhone) {
           return res.status(400).json({
-            error: "\u0627\u0633\u0645 \u0627\u0644\u0639\u0645\u064A\u0644 \u0648\u0631\u0642\u0645 \u062C\u0648\u0627\u0644\u0647 \u0627\u0644\u0635\u062D\u064A\u062D \u0645\u0637\u0644\u0648\u0628\u0627\u0646 \u0644\u0637\u0644\u0628 \u0646\u0642\u0637\u0629 \u0627\u0644\u0628\u064A\u0639",
-            code: "POS_CUSTOMER_REQUIRED"
+            error: "\u0631\u0642\u0645 \u062C\u0648\u0627\u0644 \u0627\u0644\u0639\u0645\u064A\u0644 \u063A\u064A\u0631 \u0635\u0627\u0644\u062D",
+            code: "POS_CUSTOMER_PHONE_INVALID"
           });
         }
-        body.customerName = customerName;
+        body.customerName = customerName || "\u0639\u0645\u064A\u0644";
         body.customerPhone = customerPhone;
         body.customerInfo = {
           ...customerInfo && typeof customerInfo === "object" && !Array.isArray(customerInfo) ? customerInfo : {},
-          customerName,
+          customerName: customerName || "\u0639\u0645\u064A\u0644",
           customerPhone,
           phoneNumber: customerPhone
         };
@@ -21978,19 +21989,18 @@ async function registerRoutes(app2) {
           customerInfo = {};
         }
       }
-      const customerPhoneInput = customerInfo?.phoneNumber || customerInfo?.customerPhone || serializedOrder.customerPhone;
+      const customerPhoneInput = customerInfo?.phoneNumber || customerInfo?.customerPhone || customerInfo?.phone || serializedOrder.customerPhone;
       const customerRecipient = normalizeCustomerPhone(String(customerPhoneInput || ""));
-      if (!customerRecipient) return res.status(400).json({ error: "\u0631\u0642\u0645 \u062C\u0648\u0627\u0644 \u0627\u0644\u0639\u0645\u064A\u0644 \u063A\u064A\u0631 \u0635\u0627\u0644\u062D" });
+      if (customerPhoneInput && !customerRecipient) return res.status(400).json({ error: "\u0631\u0642\u0645 \u062C\u0648\u0627\u0644 \u0627\u0644\u0639\u0645\u064A\u0644 \u063A\u064A\u0631 \u0635\u0627\u0644\u062D" });
       const orderNumber = String(serializedOrder.orderNumber || req.params.orderNumber);
-      const customerName = String(customerInfo?.customerName || customerInfo?.name || serializedOrder.customerName || "").trim().slice(0, 80);
-      if (!customerName) return res.status(400).json({ error: "\u0627\u0633\u0645 \u0627\u0644\u0639\u0645\u064A\u0644 \u063A\u064A\u0631 \u0645\u0648\u062C\u0648\u062F \u0641\u064A \u0627\u0644\u0637\u0644\u0628" });
+      const customerName = String(customerInfo?.customerName || customerInfo?.name || serializedOrder.customerName || "").trim().slice(0, 80) || "\u0639\u0645\u064A\u0644";
       const tenantId = orderTenantId || scopedTenantId;
       const businessConfig = tenantId ? await BusinessConfigModel.findOne({ tenantId }).select("posOrdersWhatsappReceiver tradeNameAr tradeNameEn vatNumber commercialRegistration vatPercentage currency").lean() : null;
       const receiverRecipient = normalizeCustomerPhone(String(businessConfig?.posOrdersWhatsappReceiver || ""));
-      if (!receiverRecipient) {
+      if (!customerRecipient && !receiverRecipient) {
         return res.status(409).json({
-          error: "\u0627\u062D\u0641\u0638 \u0631\u0642\u0645 \u0627\u0633\u062A\u0642\u0628\u0627\u0644 \u0627\u0644\u0637\u0644\u0628\u0627\u062A \u0641\u064A \u0625\u0639\u062F\u0627\u062F\u0627\u062A POS \u0642\u0628\u0644 \u0625\u0631\u0633\u0627\u0644 \u0648\u0627\u062A\u0633\u0627\u0628",
-          code: "POS_WHATSAPP_RECEIVER_NOT_CONFIGURED"
+          error: "\u0623\u062F\u062E\u0644 \u0631\u0642\u0645 \u062C\u0648\u0627\u0644 \u0627\u0644\u0639\u0645\u064A\u0644 \u0623\u0648 \u0627\u062D\u0641\u0638 \u0631\u0642\u0645 \u0627\u0633\u062A\u0642\u0628\u0627\u0644 \u0627\u0644\u0637\u0644\u0628\u0627\u062A \u0644\u0625\u0631\u0633\u0627\u0644 \u0627\u0644\u0641\u0627\u062A\u0648\u0631\u0629 \u0639\u0628\u0631 \u0648\u0627\u062A\u0633\u0627\u0628",
+          code: "POS_WHATSAPP_RECIPIENT_NOT_CONFIGURED"
         });
       }
       const total = Number(serializedOrder.totalAmount);
@@ -22044,7 +22054,7 @@ async function registerRoutes(app2) {
       const customerMessage = trimMessage(customerMessageParts);
       const receiverMessage = trimMessage(receiverMessageParts);
       const orderId = String(serializedOrder.id || order._id || orderNumber);
-      const sameRecipient = customerRecipient === receiverRecipient;
+      const sameRecipient = Boolean(customerRecipient && customerRecipient === receiverRecipient);
       const invoicePdfUrl = createPosInvoiceUrl(orderNumber, tenantId);
       const invoiceAttachments = [{
         url: invoicePdfUrl,
@@ -22056,24 +22066,26 @@ async function registerRoutes(app2) {
         "\u0634\u0643\u0631\u0627\u064B \u0644\u0637\u0644\u0628\u0643 \u0645\u0646 \u0625\u0644\u0648\u0629.",
         ...receiverMessageParts
       ]);
-      let customerDelivery = "failed";
-      let receiverDelivery = "failed";
+      let customerDelivery = customerRecipient ? "failed" : "skipped";
+      let receiverDelivery = receiverRecipient ? "failed" : "skipped";
       let customerError;
       let receiverError;
-      try {
-        await sendSaasWhatsApp({
-          to: customerRecipient,
-          clientName: customerName,
-          message: sameRecipient ? sameRecipientMessage : customerMessage,
-          idempotencyKey: `pos-order-customer-${orderId}`,
-          attachments: invoiceAttachments
-        });
-        customerDelivery = "sent";
-        if (sameRecipient) receiverDelivery = "sent";
-      } catch (error) {
-        customerError = error;
+      if (customerRecipient) {
+        try {
+          await sendSaasWhatsApp({
+            to: customerRecipient,
+            clientName: customerName,
+            message: sameRecipient ? sameRecipientMessage : customerMessage,
+            idempotencyKey: `pos-order-customer-${orderId}`,
+            attachments: invoiceAttachments
+          });
+          customerDelivery = "sent";
+          if (sameRecipient) receiverDelivery = "sent";
+        } catch (error) {
+          customerError = error;
+        }
       }
-      if (!sameRecipient) {
+      if (receiverRecipient && !sameRecipient) {
         try {
           await sendSaasWhatsApp({
             to: receiverRecipient,
@@ -22093,7 +22105,7 @@ async function registerRoutes(app2) {
         return res.status(503).json({
           error: "\u062A\u0639\u0630\u0631 \u0625\u0631\u0633\u0627\u0644 \u0625\u062D\u062F\u0649 \u0631\u0633\u0627\u0626\u0644 QIROX. \u0627\u0644\u0637\u0644\u0628 \u0645\u062D\u0641\u0648\u0638 \u0648\u064A\u0645\u0643\u0646 \u0625\u0639\u0627\u062F\u0629 \u0627\u0644\u0645\u062D\u0627\u0648\u0644\u0629.",
           delivery,
-          invoicePdfAttached: false,
+          invoicePdfAttached: customerDelivery === "sent",
           receiverInvoicePdfAttached: (sameRecipient ? customerDelivery : receiverDelivery) === "sent"
         });
       }

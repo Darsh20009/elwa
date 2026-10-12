@@ -83,6 +83,14 @@ async function tryRestoreFromHeaders(req: AuthRequest, res?: any): Promise<boole
   }
 }
 
+export async function restoreEmployeeSessionFromHeaders(req: AuthRequest): Promise<boolean> {
+  if (req.session?.employee) {
+    req.employee = { ...req.session.employee, tenantId: (req.session.employee as any).tenantId || "default" };
+    return true;
+  }
+  return tryRestoreFromHeaders(req);
+}
+
 export function requireAuth(req: AuthRequest, res: Response, next: NextFunction) {
   if (req.session.employee) {
     req.employee = { ...req.session.employee, tenantId: (req.session.employee as any).tenantId || 'default' };

@@ -8,7 +8,7 @@ import { getRealtimeEngine } from "@/lib/realtime-engine";
 import { playNotificationSound, initAudioUnlock, getSoundEnabled, setSoundEnabled as saveSoundEnabled } from "@/lib/notification-sounds";
 import { AudioUnlockBanner } from "@/components/audio-unlock-banner";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { queryClient, getErrorMessage } from "@/lib/queryClient";
+import { queryClient, getErrorMessage, apiRequest } from "@/lib/queryClient";
 import { cacheMenuItems, getCachedMenuItems, savePendingOrder, getPendingOrdersCount, getPendingOrders, updatePendingOrderReceiptData, syncPendingOrders, type PendingOrder } from "@/lib/offline-cashier";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -401,12 +401,7 @@ export default function EmployeeCashier() {
         return { orderNumber: pending.id, offline: true, status: 'pending_sync', totalAmount: orderData.totalAmount };
       }
 
-      const response = await fetch("/api/orders", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify(orderData),
-      });
+      const response = await apiRequest("POST", "/api/orders", orderData);
 
       // If response is 202 (queued by service worker offline), treat as pending
       if (response.status === 202) {
@@ -416,7 +411,8 @@ export default function EmployeeCashier() {
       }
       
       if (!response.ok) {
-        throw new Error("Failed to create order");
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error?.error || "Failed to create order");
       }
       
       return response.json();

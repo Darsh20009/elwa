@@ -1755,7 +1755,7 @@ export default function PosSystem() {
       toast({ 
         variant: "destructive",
         title: t('pos.checkout_error_title'), 
-        description: t('pos.checkout_error') 
+        description: error instanceof Error && error.message ? error.message : t('pos.checkout_error') 
       });
     } finally {
       setSyncing(false);
