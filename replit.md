@@ -1,19 +1,19 @@
 # Running this project on Replit
 
-## Current preview
+## Development preview
 
-The **Start application** workflow runs the Vite frontend on port 5000. This makes the interface available for preview, but it does not run the Express API or connect to a database. Sign-in, orders, and other database-backed features are unavailable in this mode.
+The **Start application** workflow runs `npm run dev` on port 5000. It serves the Vite frontend and Express API together and connects to the configured MongoDB database. Check `/health` to confirm the API and database are ready.
 
-## Full application
+## Environment
 
-The full development server is started with `npm run dev`. Before switching the workflow to that command, configure these values for the actual customer:
+Use Node.js 20.19 through 22. Keep credentials in Replit Secrets and customer configuration in Replit environment variables:
 
-- `MONGODB_URI`: connection string for that customer's own MongoDB database. The server rejects database names containing `qirox`.
-- `MONGODB_DATABASE`: set this to the dedicated database name if `MONGODB_URI` has no database path; use `elwa` for the current connection. Do not use a name containing `qirox`.
-- `TENANT_ID`: the assigned tenant identifier.
-- `PROJECT_PLAN_TIER`: `lite`, `pro`, or `infinity`.
-- `BUSINESS_CONFIG_JSON`: valid JSON with `businessName` and a six-digit hexadecimal `primaryColor` for local `npm run dev`. Use verified legal details; the production build requires an official `commercialRegNumber`. Never use placeholders for legal or tax identifiers.
-- `BOOTSTRAP_ADMIN_PASSWORD`: at least 6 characters for the initial owner account. This shorter minimum is weaker; prefer a longer password when possible.
-- `SESSION_SECRET`: at least 32 characters; this Repl already has this secret configured.
+- Secrets: `MONGODB_URI` for this customer's database, `BOOTSTRAP_ADMIN_PASSWORD` for the initial owner account, and `SESSION_SECRET` (at least 32 characters).
+- Environment variables: `MONGODB_DATABASE`, `TENANT_ID`, `PROJECT_PLAN_TIER` (`lite`, `pro`, or `infinity`), and `BUSINESS_CONFIG_JSON`.
+- `BUSINESS_CONFIG_JSON` must be valid JSON with a business name and a six-digit hexadecimal `primaryColor`. `MONGODB_DATABASE` must match the database in `MONGODB_URI` when one is specified there. The server rejects database names containing `qirox`.
 
-Keep database credentials and passwords in Replit Secrets, not in source files or chat. Do not use placeholder tenant or business values for a real deployment.
+Run `npm run dev` to start the development server. Do not use placeholder tenant, business, legal, or tax details for a real customer.
+
+## Tenant build
+
+`npm run build:tenant` customizes tenant branding and plan features before building, and requires an official `commercialRegNumber` in `BUSINESS_CONFIG_JSON`. Verify the legal details before running it; do not use placeholders.
