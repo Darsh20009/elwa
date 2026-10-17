@@ -2,16 +2,19 @@ import { Button } from "@/components/ui/button";
 import { Download, Printer } from "lucide-react";
 import type { Order } from "@shared/schema";
 import { brand } from "@/lib/brand";
-import { useRef, useState, useEffect } from "react";
+import { useRef, useState, useEffect, useMemo } from "react";
+import { useQuery } from "@tanstack/react-query";
 import QRCode from "qrcode";
 import { fmtOrderNum, printHtmlInPage, isAndroidDevice } from "@/lib/print-utils";
 import { useTranslate } from "@/lib/useTranslate";
+import { normalizeReceiptTemplate, type ReceiptSurface } from "@shared/receipt-template";
 
 interface ReceiptInvoiceProps {
   order: Order;
   variant?: "button" | "auto";
   precomputedTrackingQr?: string;
   precomputedZatcaQr?: string;
+  surface?: ReceiptSurface;
 }
 
 function parseNum(v: any): number {
@@ -27,11 +30,22 @@ function Sar() {
   );
 }
 
-export function ReceiptInvoice({ order, variant = "button", precomputedTrackingQr, precomputedZatcaQr }: ReceiptInvoiceProps) {
+export function ReceiptInvoice({ order, variant = "button", precomputedTrackingQr, precomputedZatcaQr, surface = "employee" }: ReceiptInvoiceProps) {
   const tc = useTranslate();
   const invoiceRef = useRef<HTMLDivElement>(null);
+  const businessConfig = useQuery<any>({ queryKey: ["/api/business-config"] });
+  const template = useMemo(
+    () => normalizeReceiptTemplate(businessConfig.data?.receiptTemplate),
+    [businessConfig.data?.receiptTemplate],
+  );
+  const customCodes = useMemo(
+    () => template.customCodes.filter(code => code.enabled && code.page === surface),
+    [template.customCodes, surface],
+  );
+  const customCodeKey = JSON.stringify(customCodes);
   const [trackingQrUrl, setTrackingQrUrl] = useState<string>(precomputedTrackingQr || "");
   const [zatcaQrUrl, setZatcaQrUrl] = useState<string>(precomputedZatcaQr || "");
+  const [customQrUrls, setCustomQrUrls] = useState<Record<string, string>>({});
 
   const getItemsArray = (): any[] => {
     try {
@@ -66,6 +80,20 @@ export function ReceiptInvoice({ order, variant = "button", precomputedTrackingQ
       } catch {}
     })();
   }, [order?.orderNumber]);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all(customCodes.map(async code => {
+      try {
+        return [code.id, await QRCode.toDataURL(code.url, { width: 180, margin: 1, errorCorrectionLevel: "M" })] as const;
+      } catch {
+        return [code.id, ""] as const;
+      }
+    })).then(entries => {
+      if (!cancelled) setCustomQrUrls(Object.fromEntries(entries.filter(([, url]) => Boolean(url))));
+    });
+    return () => { cancelled = true; };
+  }, [customCodeKey, surface]);
 
   if (!order?.orderNumber) return null;
 
@@ -108,6 +136,14 @@ export function ReceiptInvoice({ order, variant = "button", precomputedTrackingQ
   })();
 
   const totalQty = items.reduce((s: number, i: any) => s + (i.quantity || 1), 0);
+  const isCampaign = template.mode === "campaign";
+  const sectionCss = Object.entries(template.display)
+    .filter(([, visible]) => !visible)
+    .map(([key]) => `[data-invoice-section="${key}"]{display:none!important;}`)
+    .join("\n");
+  const customScale = template.mode === "custom"
+    ? template.fontSize === "small" ? 0.92 : template.fontSize === "large" ? 1.1 : 1
+    : 1;
 
   // Build a stand-alone HTML doc by cloning the on-screen invoice — vector text, instant.
   const buildPrintDoc = (): string => {
@@ -139,7 +175,9 @@ export function ReceiptInvoice({ order, variant = "button", precomputedTrackingQ
     if (isAndroidDevice) { setPrintReady(true); return; }
     // Wait until both QR codes are generated before staging the iframe
     if (!trackingQrUrl || !zatcaQrUrl || !invoiceRef.current) return;
-    if (printIframeRef.current) return; // already staged
+    try { printIframeRef.current?.remove(); } catch {}
+    printIframeRef.current = null;
+    setPrintReady(false);
 
     let cancelled = false;
     (async () => {
@@ -183,7 +221,7 @@ export function ReceiptInvoice({ order, variant = "button", precomputedTrackingQ
 
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [trackingQrUrl, zatcaQrUrl]);
+  }, [trackingQrUrl, zatcaQrUrl, customQrUrls, customCodeKey, template.mode, sectionCss, surface]);
 
   // Cleanup the staged iframe on unmount
   useEffect(() => {
@@ -271,6 +309,7 @@ export function ReceiptInvoice({ order, variant = "button", precomputedTrackingQ
       <div
         ref={invoiceRef}
         data-testid="invoice-preview"
+        data-receipt-mode={template.mode}
         style={{
           direction: "rtl",
           fontFamily: "'Cairo', 'Tajawal', Tahoma, Arial, sans-serif",
@@ -279,55 +318,67 @@ export function ReceiptInvoice({ order, variant = "button", precomputedTrackingQ
           width: "300px",
           margin: "0 auto",
           padding: "0",
-          fontSize: "13px",
+          fontSize: template.mode === "custom" ? `${13 * customScale}px` : "13px",
           lineHeight: 1.5,
           fontWeight: 700,
         }}
       >
+        {sectionCss && <style>{sectionCss}</style>}
         {/* ── top spacing ── */}
-        <div style={{ height: "20px" }} />
+        <div style={{ height: isCampaign ? 0 : "20px" }} />
+
+        {isCampaign && (
+          <img
+            src="/invoice-campaign-header.png"
+            alt="بالغوا بالدفاع عن وطنكم"
+            className="invoice-campaign-header"
+            style={{ width: "100%", height: "auto", display: "block", objectFit: "contain" }}
+          />
+        )}
 
         {/* ── 1. Order number ── */}
-        <div style={{ textAlign: "center", fontWeight: 900, fontSize: "22px", letterSpacing: "2px", padding: "10px 0 6px" }}>
+        <div data-invoice-section="orderNumber" style={{ textAlign: "center", fontWeight: 900, fontSize: isCampaign ? "26px" : "22px", letterSpacing: "2px", padding: isCampaign ? "2px 0 6px" : "10px 0 6px" }}>
           #{orderNum}
         </div>
 
         {/* ── 2. Logo ── */}
-        <div style={{ padding: "6px 0 10px", marginBottom: "4px" }}>
-          <img
-            src="/elwa-invoice-logo.png?v=4"
-            alt="Elwa"
-            crossOrigin="anonymous"
-            style={{ width: "200px", height: "auto", display: "block", margin: "0 auto" }}
-          />
-        </div>
+        {!isCampaign && (
+          <div data-invoice-section="logo" style={{ padding: "6px 0 10px", marginBottom: "4px" }}>
+            <img
+              src="/elwa-invoice-logo.png?v=4"
+              alt="Elwa"
+              crossOrigin="anonymous"
+              style={{ width: "200px", height: "auto", display: "block", margin: "0 auto" }}
+            />
+          </div>
+        )}
 
         {/* ── 3. Business info ── */}
         <div style={{ textAlign: "center", fontSize: "12px", lineHeight: "1.9", marginBottom: "8px" }}>
-          <div style={{ fontWeight: 900, fontSize: "15px" }}>Elwa</div>
-          <div style={{ fontSize: "11px", color: "#444" }}>حي المروج، طريق الأمير مقرن</div>
-          <div style={{ direction: "ltr", fontSize: "11px", color: "#444" }}>الرقم الضريبي: 312718675800003</div>
-          <div style={{ fontSize: "11px", color: "#444" }}>101000004295 :رقم الفاتورة</div>
-          <div style={{ direction: "ltr", fontSize: "11px", color: "#444" }}>{timeStr} · {dateStr}</div>
-          <div style={{ fontWeight: 700, fontSize: "13px", marginTop: "3px", background: "#f0f0f0", padding: "2px 8px", display: "inline-block", borderRadius: "4px" }}>
+          <div data-invoice-section="businessDetails" style={{ fontWeight: 900, fontSize: "15px" }}>Elwa</div>
+          <div data-invoice-section="branchInfo" style={{ fontSize: "11px", color: "#444" }}>حي المروج، طريق الأمير مقرن</div>
+          <div data-invoice-section="legalInfo" style={{ direction: "ltr", fontSize: "11px", color: "#444" }}>الرقم الضريبي: 312718675800003</div>
+          <div data-invoice-section="legalInfo" style={{ fontSize: "11px", color: "#444" }}>101000004295 :رقم الفاتورة</div>
+          <div data-invoice-section="date" style={{ direction: "ltr", fontSize: "11px", color: "#444" }}>{timeStr} · {dateStr}</div>
+          <div data-invoice-section="orderType" style={{ fontWeight: 700, fontSize: "13px", marginTop: "3px", background: template.mode === "custom" ? `${template.accentColor}18` : "#f0f0f0", padding: "2px 8px", display: "inline-block", borderRadius: "4px" }}>
             {orderTypeLabel}
           </div>
         </div>
 
         {/* ── 4. Cashier ── */}
         {safeOrder.employeeName && (
-          <div style={{ textAlign: "center", fontSize: "11px", color: "#555", marginBottom: "4px" }}>
+          <div data-invoice-section="cashier" style={{ textAlign: "center", fontSize: "11px", color: "#555", marginBottom: "4px" }}>
             الكاشير: <strong>{safeOrder.employeeName}</strong>
           </div>
         )}
 
         {/* ── 5. Items header ── */}
-        <div style={dash()} />
-        <div style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", color: "#555", fontWeight: 700, padding: "2px 0 3px" }}>
+        <div data-invoice-section="items" style={dash()} />
+        <div data-invoice-section="items" style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", color: "#555", fontWeight: 700, padding: "2px 0 3px" }}>
           <span>السعر</span>
           <span>المنتج</span>
         </div>
-        <div style={dash()} />
+        <div data-invoice-section="items" style={dash()} />
 
         {/* ── 6. Items list (bilingual) ── */}
         {items.map((item: any, idx: number) => {
@@ -339,7 +390,7 @@ export function ReceiptInvoice({ order, variant = "button", precomputedTrackingQ
           const selectedSize = item.selectedSize || item.coffeeItem?.selectedSize || "";
           const addons: string[] = item.customization?.selectedItemAddons?.map((a: any) => a.nameAr).filter(Boolean) || [];
           return (
-            <div key={idx} style={{ marginBottom: "6px" }}>
+            <div key={idx} data-invoice-section="items" style={{ marginBottom: "6px" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", ...cell() }}>
                 <span style={{ fontFamily: "Arial, sans-serif", fontWeight: 700, fontSize: "11px", flexShrink: 0, whiteSpace: "nowrap" }}>
                   SAR {lineTotal.toFixed(2)}
@@ -356,36 +407,36 @@ export function ReceiptInvoice({ order, variant = "button", precomputedTrackingQ
         })}
 
         {/* ── 7. Item count ── */}
-        <div style={dash()} />
-        <div style={{ textAlign: "center", fontSize: "11px", color: "#333", padding: "2px 0" }}>
+        <div data-invoice-section="itemCount" style={dash()} />
+        <div data-invoice-section="itemCount" style={{ textAlign: "center", fontSize: "11px", color: "#333", padding: "2px 0" }}>
           عدد المنتجات: {totalQty}
         </div>
-        <div style={dash()} />
+        <div data-invoice-section="itemCount" style={dash()} />
 
         {/* ── 8. Totals ── */}
         {[
           { label: "المجموع الفرعي", value: subtotal.toFixed(2) },
           { label: "ضريبة القيمة المضافة (15%)", value: vat.toFixed(2) },
         ].map(({ label, value }) => (
-          <div key={label} style={{ display: "flex", justifyContent: "space-between", ...cell({ fontSize: "12px" }) }}>
+          <div key={label} data-invoice-section="totals" style={{ display: "flex", justifyContent: "space-between", ...cell({ fontSize: "12px" }) }}>
             <span style={{ fontFamily: "Arial, sans-serif" }}>SAR {value}</span>
             <span>{label}</span>
           </div>
         ))}
 
         {/* Grand total */}
-        <div style={{ display: "flex", justifyContent: "space-between", ...cell(bold({ fontSize: "16px", borderTop: "2px solid #000", paddingTop: "8px", marginTop: "10px" })) }}>
+        <div data-invoice-section="totals" style={{ display: "flex", justifyContent: "space-between", ...cell(bold({ fontSize: "16px", borderTop: `2px solid ${template.mode === "custom" ? template.accentColor : "#000"}`, paddingTop: "8px", marginTop: "10px" })) }}>
           <span style={{ fontFamily: "Arial, sans-serif", fontWeight: 900 }}>SAR {totalAmount.toFixed(2)}</span>
           <span>المجموع الكلي</span>
         </div>
 
         {/* Payment method */}
-        <div style={{ display: "flex", justifyContent: "space-between", ...cell({ fontSize: "12px", paddingTop: "4px" }) }}>
+        <div data-invoice-section="payment" style={{ display: "flex", justifyContent: "space-between", ...cell({ fontSize: "12px", paddingTop: "4px" }) }}>
           <span style={{ fontFamily: "Arial, sans-serif" }}>SAR {totalAmount.toFixed(2)}</span>
           <span>طريقة الدفع: {paymentLabel}</span>
         </div>
 
-        <div style={dash()} />
+        <div data-invoice-section="notes" style={dash()} />
 
         {/* ── 8b. ملاحظات العميل ── */}
         {(() => {
@@ -398,7 +449,7 @@ export function ReceiptInvoice({ order, variant = "button", precomputedTrackingQ
           notesText = String(notesText).trim();
           if (!notesText) return null;
           return (
-            <div style={{ background: "#fef3c7", border: "1px solid #f59e0b", borderRadius: "6px", padding: "8px 10px", margin: "4px 0 8px", fontSize: "12px", lineHeight: "1.9", direction: "rtl", textAlign: "right" }}>
+            <div data-invoice-section="notes" style={{ background: "#fef3c7", border: "1px solid #f59e0b", borderRadius: "6px", padding: "8px 10px", margin: "4px 0 8px", fontSize: "12px", lineHeight: "1.9", direction: "rtl", textAlign: "right" }}>
               <div style={{ fontWeight: 900, color: "#92400e", marginBottom: "3px" }}>📝 ملاحظات العميل:</div>
               <div style={{ color: "#78350f", fontWeight: 700, whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "'Cairo', 'Tajawal', Tahoma, Arial, sans-serif" }}>
                 {notesText}
@@ -408,14 +459,14 @@ export function ReceiptInvoice({ order, variant = "button", precomputedTrackingQ
         })()}
 
         {/* ── 9. Tagline ── */}
-        <div style={{ textAlign: "center", fontSize: "13px", fontWeight: 700, padding: "2px 0 4px" }}>
+        <div data-invoice-section="tagline" style={{ textAlign: "center", fontSize: "13px", fontWeight: 700, padding: "2px 0 4px" }}>
           "قهوة تُقال .. وورد يُهدى"
         </div>
-        <div style={{ textAlign: "center", fontSize: "11px", color: "#555", paddingBottom: "8px" }}>Elwa</div>
+        <div data-invoice-section="tagline" style={{ textAlign: "center", fontSize: "11px", color: "#555", paddingBottom: "8px" }}>Elwa</div>
 
         {/* ── 10. Tracking QR barcode — small on right with text beside it ── */}
         {trackingQrUrl && (
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "10px", padding: "6px 4px 4px", direction: "rtl" }}>
+          <div data-invoice-section="trackingBarcode" style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "10px", padding: "6px 4px 4px", direction: "rtl" }}>
             <img src={trackingQrUrl} alt="Tracking QR" style={{ width: "52px", height: "52px", flexShrink: 0 }} />
             <div style={{ textAlign: "right", lineHeight: "1.7" }}>
               <div style={{ fontSize: "12px", fontWeight: 900, color: "#111" }}>باركود تتبع الطلب</div>
@@ -440,13 +491,20 @@ export function ReceiptInvoice({ order, variant = "button", precomputedTrackingQ
           </div>
         )}
 
-        <div style={{ textAlign: "center", fontSize: "12px", fontWeight: 700, padding: "2px 0 8px" }}>
+        {customCodes.map(code => customQrUrls[code.id] && (
+          <div key={code.id} style={{ textAlign: "center", padding: "6px 0 10px" }}>
+            <div style={{ fontSize: "12px", fontWeight: 900, marginBottom: "4px" }}>{code.label}</div>
+            <img src={customQrUrls[code.id]} alt="" style={{ width: "100px", height: "100px", display: "inline-block" }} />
+          </div>
+        ))}
+
+        <div data-invoice-section="thankYou" style={{ textAlign: "center", fontSize: "12px", fontWeight: 700, padding: "2px 0 8px" }}>
           <div>شكراً لزيارتكم</div>
           <div style={{ fontSize: "10px", fontWeight: 400, color: "#555" }}>Thank you for visiting us</div>
         </div>
 
         {/* ── 12. Powered by ── */}
-        <div style={{ borderTop: "1px dashed #ccc", textAlign: "center", padding: "10px 0", marginTop: "4px", fontFamily: "Arial, sans-serif", fontSize: "11px", color: "#555", letterSpacing: "0.3px" }}>
+        <div data-invoice-section="poweredBy" style={{ borderTop: "1px dashed #ccc", textAlign: "center", padding: "10px 0", marginTop: "4px", fontFamily: "Arial, sans-serif", fontSize: "11px", color: "#555", letterSpacing: "0.3px" }}>
           Powered by QIROX STUDIO
         </div>
 

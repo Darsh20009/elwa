@@ -862,6 +862,7 @@ export interface IBusinessConfig extends Document {
   prepBaseMinutes?: number;
   prepExtraMinutesPerItem?: number;
   prepFreeItemCount?: number;
+  receiptTemplate?: Record<string, any> | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -984,6 +985,7 @@ const BusinessConfigSchema = new Schema<IBusinessConfig>({
   prepBaseMinutes: { type: Number, default: 10 },
   prepExtraMinutesPerItem: { type: Number, default: 3 },
   prepFreeItemCount: { type: Number, default: 2 },
+  receiptTemplate: { type: Schema.Types.Mixed, default: null },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now },
 });

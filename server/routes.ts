@@ -9,6 +9,7 @@ import { sendSaasWhatsApp } from "./saas-services";
 import { createPosInvoicePdf, createPosInvoiceUrl, verifyPosInvoiceToken } from "./pos-invoice-pdf";
 import { foodicsMonthlySales, foodicsMonthlySalesInfo } from "@shared/foodics-monthly-sales";
 import { normalizeCustomerPhone } from "@shared/customer-phone";
+import { receiptTemplateSchema } from "@shared/receipt-template";
 
 // Must match SESSION_VERSION in server/index.ts — bump both together to force re-login on all devices
 const SESSION_VERSION = '2026-07-06-v1';
@@ -2052,7 +2053,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const setMap: Record<string, any> = { updatedAt: new Date() };
 
       for (const [key, value] of Object.entries(updates)) {
-        setMap[key] = value;
+        if (key === "receiptTemplate") {
+          const parsed = receiptTemplateSchema.safeParse(value);
+          if (!parsed.success) return res.status(400).json({ error: "Invalid invoice design settings" });
+          setMap[key] = parsed.data;
+        } else {
+          setMap[key] = value;
+        }
       }
 
       const config = await BusinessConfigModel.findOneAndUpdate(

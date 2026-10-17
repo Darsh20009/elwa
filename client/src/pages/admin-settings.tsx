@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { Save, Shield, Bell, Palette, Database, Plus, Store, Utensils, Coffee, AlertTriangle, Layout, ShieldAlert, Users, Loader2, Trash2, FolderTree, Flame, Snowflake, Star, Cake, Sparkles, GripVertical, Pencil, CreditCard, Wifi, WifiOff, Eye, EyeOff, ExternalLink, CheckCircle, XCircle, Banknote, Smartphone, Gift, Percent, Tag, Ticket, Download, Globe, Package, ChevronDown, ChevronUp, MonitorSmartphone, MapPin, Navigation, FlaskConical, ShoppingBag, Truck, Timer, Car, Clock, Zap, Volume2, Settings } from 'lucide-react';
 import { SoundSettingsPanel } from "@/components/sound-settings-panel";
+import InvoiceTemplateSettings from "@/components/invoice-template-settings";
 import {
   Dialog,
   DialogContent,
@@ -2806,6 +2807,8 @@ export default function AdminSettings() {
             </div>
           </CardContent>
         </Card>
+
+        <InvoiceTemplateSettings />
 
         {/* User Management Quick Links */}
         <Card className="hover-elevate border-green-100 dark:border-green-900/30">
