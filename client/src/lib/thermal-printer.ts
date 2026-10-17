@@ -3,6 +3,7 @@
  * Supports: WebUSB (ESC/POS) → silent auto-print, no dialog
  *           Browser Print fallback (window.print via iframe)
  */
+import { normalizeReceiptTemplate, type ReceiptTemplateConfig } from "@shared/receipt-template";
 
 const ESC = 0x1b;
 const GS  = 0x1d;
@@ -810,9 +811,13 @@ export interface ReceiptBitmapOpts {
   splitPayment?: { cash: number; card: number };
   paymentMethod: string;
   logoDataUrl?: string;
+  campaignHeaderDataUrl?: string;
   orderBarcodeDataUrl?: string;
   trackingQrDataUrl?: string;
   zatcaQrDataUrl?: string;
+  notes?: string;
+  receiptTemplate?: ReceiptTemplateConfig;
+  customCodes?: Array<{ id: string; label: string; qrDataUrl: string }>;
   paperWidth: '58mm' | '80mm';
   feedLines?: number;
 }
@@ -826,7 +831,13 @@ export async function buildReceiptCanvas(opts: ReceiptBitmapOpts): Promise<HTMLC
   const DW = opts.paperWidth === '58mm' ? 384 : 576;
   const PAD = Math.round(DW * 0.04);   // ~4% side padding
   const CONTENT_W = DW - PAD * 2;
-  const FS = opts.paperWidth === '58mm' ? 24 : 30;  // base font size (enlarged per request)
+  const template = normalizeReceiptTemplate(opts.receiptTemplate);
+  const display = template.display;
+  const baseFs = opts.paperWidth === '58mm' ? 24 : 30;
+  const fontScale = template.mode === 'custom'
+    ? template.fontSize === 'small' ? 0.9 : template.fontSize === 'large' ? 1.12 : 1
+    : 1;
+  const FS = Math.round(baseFs * fontScale);
 
   // ── Helper: load an image from dataUrl ───────────────────────────────────
   const loadImg = (src: string): Promise<HTMLImageElement> =>
@@ -840,16 +851,21 @@ export async function buildReceiptCanvas(opts: ReceiptBitmapOpts): Promise<HTMLC
     });
 
   // ── Pre-load images ───────────────────────────────────────────────────────
-  const [logoImg, barcodeImg, trackImg, zatcaImg] = await Promise.all([
+  const [logoImg, barcodeImg, trackImg, zatcaImg, campaignImg, customCodeImages] = await Promise.all([
     opts.logoDataUrl ? loadImg(opts.logoDataUrl) : Promise.resolve(null),
     opts.orderBarcodeDataUrl ? loadImg(opts.orderBarcodeDataUrl) : Promise.resolve(null),
     opts.trackingQrDataUrl ? loadImg(opts.trackingQrDataUrl) : Promise.resolve(null),
     opts.zatcaQrDataUrl ? loadImg(opts.zatcaQrDataUrl) : Promise.resolve(null),
+    opts.campaignHeaderDataUrl ? loadImg(opts.campaignHeaderDataUrl) : Promise.resolve(null),
+    Promise.all((opts.customCodes || []).map(async code => ({
+      code,
+      image: await loadImg(code.qrDataUrl),
+    }))),
   ]);
 
   // ── Build drawing queue (y-position auto-managed) ────────────────────────
   type DrawOp =
-    | { type: 'img'; img: HTMLImageElement; size: number; }
+    | { type: 'img'; img: HTMLImageElement; size: number; fit?: 'width' | 'square'; }
     | { type: 'text'; text: string; align: 'center' | 'left' | 'right'; fs: number; bold: boolean; color?: string; }
     | { type: 'row'; label: string; value: string; fs: number; boldLabel?: boolean; boldValue?: boolean; color?: string; }
     | { type: 'line'; thick?: boolean; dashed?: boolean; }
@@ -869,43 +885,41 @@ export async function buildReceiptCanvas(opts: ReceiptBitmapOpts): Promise<HTMLC
     ops.push({ type: 'text', text, align, fs, bold, color });
   const addRow   = (label: string, value: string, fs = FS, boldLabel = false, boldValue = false, color?: string) =>
     ops.push({ type: 'row', label, value, fs, boldLabel, boldValue, color });
-  const addImg   = (img: HTMLImageElement | null, size: number) => {
-    if (img && img.naturalWidth > 0) ops.push({ type: 'img', img, size });
+  const addImg   = (img: HTMLImageElement | null, size: number, fit: 'width' | 'square' = 'square') => {
+    if (img && img.naturalWidth > 0) ops.push({ type: 'img', img, size, fit });
   };
 
-  // ── RECEIPT LAYOUT — 2 blank lines at the top of every invoice ────────────
-  addGap(Math.round(FS * 3.2));
-
-  // Logo — centred. 35% of paper width.
-  addImg(logoImg, Math.round(DW * 0.35));
-  addGap(8);
-
-  // Branch / tagline / VAT — no repeated shop name (it's in the logo)
-  if (opts.branchName) addText(opts.branchName, 'center', Math.round(FS * 0.88));
-  if (opts.tagline)    addText(opts.tagline, 'center', Math.round(FS * 0.82), false, '#444');
-  addText(`VAT: ${opts.vatNumber}`, 'center', Math.round(FS * 0.78), false, '#555');
-
-  // ── ONE separator line after brand header ───────────────────────────────
-  addLine(true);
-
-  // Invoice title + order number
-  addText('فاتورة ضريبية مبسطة', 'center', Math.round(FS * 1.05), true);
-  addGap(Math.round(FS * 0.8));
-
   const orderNumFmt = String(opts.orderNumber).replace(/\D/g, '').padStart(4, '0') || opts.orderNumber;
-  addText(`#${orderNumFmt}`, 'center', Math.round(FS * 2.4), true);
-  addGap(Math.round(FS * 0.4));
+  const campaignSelected = template.mode === 'campaign' && campaignImg?.naturalWidth;
+  if (campaignSelected) {
+    addImg(campaignImg, DW, 'width');
+    if (display.orderNumber) addText(`#${orderNumFmt}`, 'center', Math.round(FS * 2.4), true);
+    addGap(Math.round(FS * 0.4));
+  } else {
+    // ── RECEIPT LAYOUT — preserve the existing default header ────────────────
+    addGap(Math.round(FS * 3.2));
+    if (display.logo) addImg(logoImg, Math.round(DW * 0.35));
+    addGap(8);
+    if (display.branchInfo && opts.branchName) addText(opts.branchName, 'center', Math.round(FS * 0.88));
+    if (display.tagline && opts.tagline) addText(opts.tagline, 'center', Math.round(FS * 0.82), false, '#444');
+    if (display.legalInfo) addText(`VAT: ${opts.vatNumber}`, 'center', Math.round(FS * 0.78), false, '#555');
+    addLine(true);
+    addText('فاتورة ضريبية مبسطة', 'center', Math.round(FS * 1.05), true);
+    addGap(Math.round(FS * 0.8));
+    if (display.orderNumber) addText(`#${orderNumFmt}`, 'center', Math.round(FS * 2.4), true);
+    addGap(Math.round(FS * 0.4));
+  }
 
   // Info block — no separator lines
-  addRow('التاريخ:', opts.orderDate, Math.round(FS * 0.88));
-  addRow('الكاشير:', opts.cashierName, Math.round(FS * 0.88));
-  if (opts.customerName && opts.customerName !== 'عميل نقدي') addRow('العميل:', opts.customerName, Math.round(FS * 0.88));
-  if (opts.tableNumber) addRow('الطاولة:', opts.tableNumber, Math.round(FS * 0.88));
-  if (opts.orderType)   addRow('نوع الطلب:', opts.orderType, Math.round(FS * 0.88));
+  if (display.date) addRow('التاريخ:', opts.orderDate, Math.round(FS * 0.88));
+  if (display.cashier) addRow('الكاشير:', opts.cashierName, Math.round(FS * 0.88));
+  if (display.customer && opts.customerName && opts.customerName !== 'عميل نقدي') addRow('العميل:', opts.customerName, Math.round(FS * 0.88));
+  if (display.orderType && opts.tableNumber) addRow('الطاولة:', opts.tableNumber, Math.round(FS * 0.88));
+  if (display.orderType && opts.orderType) addRow('نوع الطلب:', opts.orderType, Math.round(FS * 0.88));
   addGap(6);
 
   // Items — no separator lines, small gap between items
-  for (const item of opts.items) {
+  if (display.items) for (const item of opts.items) {
     addText(item.name, 'right', Math.round(FS * 0.95), true);
     if (item.nameEn && item.nameEn.trim() && item.nameEn !== item.name) {
       addText(item.nameEn, 'right', Math.round(FS * 0.78), false, '#555');
@@ -917,15 +931,18 @@ export async function buildReceiptCanvas(opts: ReceiptBitmapOpts): Promise<HTMLC
     addGap(5);
   }
 
-  addGap(4);
-
-  // Totals — no separator lines
-  addRow('قبل الضريبة:', `${opts.subtotal.toFixed(2)} ر.س`, Math.round(FS * 0.88));
-  addRow('ضريبة القيمة المضافة 15%:', `${opts.vat.toFixed(2)} ر.س`, Math.round(FS * 0.88));
-  if (opts.discount && opts.discount > 0)
-    addRow('الخصم:', `-${opts.discount.toFixed(2)} ر.س`, Math.round(FS * 0.88), false, false, '#16a34a');
-  addRow('الإجمالي:', `${opts.total.toFixed(2)} ر.س`, Math.round(FS * 1.05), false, true);
-  addGap(4);
+  if (display.itemCount && template.mode === 'custom') {
+    addText(`عدد المنتجات: ${opts.items.reduce((sum, item) => sum + item.qty, 0)}`, 'center', Math.round(FS * 0.8));
+  }
+  if (display.totals) {
+    addGap(4);
+    addRow('قبل الضريبة:', `${opts.subtotal.toFixed(2)} ر.س`, Math.round(FS * 0.88));
+    addRow('ضريبة القيمة المضافة 15%:', `${opts.vat.toFixed(2)} ر.س`, Math.round(FS * 0.88));
+    if (opts.discount && opts.discount > 0)
+      addRow('الخصم:', `-${opts.discount.toFixed(2)} ر.س`, Math.round(FS * 0.88), false, false, '#16a34a');
+    addRow('الإجمالي:', `${opts.total.toFixed(2)} ر.س`, Math.round(FS * 1.05), false, true, template.mode === 'custom' ? template.accentColor : undefined);
+    addGap(4);
+  }
 
   // Payment — no separator
   const _receiptPayLabel = (() => {
@@ -941,18 +958,18 @@ export async function buildReceiptCanvas(opts: ReceiptBitmapOpts): Promise<HTMLC
     if (m === 'loyalty' || m === 'qahwa-card' || m === 'qirox-card') return 'بطاقة ولاء';
     return opts.paymentMethod;
   })();
-  addRow('طريقة الدفع:', _receiptPayLabel, Math.round(FS * 0.88));
-  if (opts.splitPayment) {
+  if (display.payment) addRow('طريقة الدفع:', _receiptPayLabel, Math.round(FS * 0.88));
+  if (display.payment && opts.splitPayment) {
     if (opts.splitPayment.cash > 0) addRow('  💵 نقدي:', `${opts.splitPayment.cash.toFixed(2)} ر.س`, Math.round(FS * 0.82));
     if (opts.splitPayment.card > 0) addRow('  💳 شبكة:', `${opts.splitPayment.card.toFixed(2)} ر.س`, Math.round(FS * 0.82));
   }
-  if ((opts as any).cashReceived && (opts as any).cashReceived > 0 && !opts.splitPayment) {
+  if (display.payment && (opts as any).cashReceived && (opts as any).cashReceived > 0 && !opts.splitPayment) {
     const cr = (opts as any).cashReceived as number;
     addRow('  المستلم:', `${cr.toFixed(2)} ر.س`, Math.round(FS * 0.82));
     addRow('  الباقي:', `${Math.max(0, cr - opts.total).toFixed(2)} ر.س`, Math.round(FS * 0.82), false, false, '#16a34a');
   }
 
-  if (barcodeImg && barcodeImg.naturalWidth > 0) {
+  if (display.trackingBarcode && barcodeImg && barcodeImg.naturalWidth > 0) {
     addGap(8);
     addImg(barcodeImg, Math.round(DW * 0.52));
     addGap(3);
@@ -961,7 +978,7 @@ export async function buildReceiptCanvas(opts: ReceiptBitmapOpts): Promise<HTMLC
 
   // ── QR codes: tracking then ZATCA, one below the other, no line between ──
   addGap(10);
-  if (trackImg && trackImg.naturalWidth > 0) {
+  if (display.trackingBarcode && trackImg && trackImg.naturalWidth > 0) {
     addImg(trackImg, Math.round(DW * 0.50));
     addGap(6);
     addText('امسح للتتبع وتسجيل النقاط', 'center', Math.round(FS * 0.8), true, '#333');
@@ -975,12 +992,23 @@ export async function buildReceiptCanvas(opts: ReceiptBitmapOpts): Promise<HTMLC
     addGap(Math.round(FS * 1.2));
   }
 
+  if (display.notes && opts.notes) {
+    addGap(8);
+    addText(`ملاحظات: ${opts.notes}`, 'right', Math.round(FS * 0.82), false, '#444');
+  }
+  for (const { code, image } of customCodeImages) {
+    if (!image || image.naturalWidth <= 0) continue;
+    addGap(8);
+    addText(code.label, 'center', Math.round(FS * 0.78), true);
+    addImg(image, Math.round(DW * 0.34));
+  }
+
   // ── ONE separator line before footer ────────────────────────────────────
   addLine(true);
 
   // Footer
-  addText('** شكراً لزيارتكم **', 'center', Math.round(FS * 1.0), true);
-  addText('الأسعار شاملة ضريبة القيمة المضافة 15%', 'center', Math.round(FS * 0.78), false, '#444');
+  if (display.thankYou) addText('** شكراً لزيارتكم **', 'center', Math.round(FS * 1.0), true);
+  if (display.poweredBy) addText('الأسعار شاملة ضريبة القيمة المضافة 15%', 'center', Math.round(FS * 0.78), false, '#444');
 
   addGap(opts.feedLines ? opts.feedLines * 8 : 24);
 
@@ -1040,10 +1068,16 @@ export async function buildReceiptCanvas(opts: ReceiptBitmapOpts): Promise<HTMLC
       ctx.fillText(op.value, PAD, y);
       y += lh;
     } else if (op.type === 'img') {
-      const size = Math.min(op.size, CONTENT_W);
-      const x = Math.floor((DW - size) / 2);
-      ctx.drawImage(op.img, x, y, size, size);
-      y += size + 4;
+      if (op.fit === 'width') {
+        const height = Math.ceil(DW * op.img.naturalHeight / op.img.naturalWidth);
+        ctx.drawImage(op.img, 0, y, DW, height);
+        y += height + 4;
+      } else {
+        const size = Math.min(op.size, CONTENT_W);
+        const x = Math.floor((DW - size) / 2);
+        ctx.drawImage(op.img, x, y, size, size);
+        y += size + 4;
+      }
     }
   }
 

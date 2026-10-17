@@ -39,7 +39,7 @@ const displayOptions: Array<{ key: ReceiptDisplayKey; ar: string; en: string }> 
   { key: "totals", ar: "المجاميع والضريبة", en: "Totals and tax" },
   { key: "payment", ar: "طريقة الدفع", en: "Payment method" },
   { key: "notes", ar: "ملاحظات العميل", en: "Customer notes" },
-  { key: "trackingBarcode", ar: "باركود تتبع الطلب", en: "Order tracking QR" },
+  { key: "trackingBarcode", ar: "باركود رقم الطلب والتتبع", en: "Order number and tracking codes" },
   { key: "tagline", ar: "عبارة المنشأة", en: "Business tagline" },
   { key: "thankYou", ar: "رسالة الشكر", en: "Thank-you message" },
   { key: "poweredBy", ar: "عبارة أسفل الفاتورة", en: "Receipt footer" },
@@ -167,7 +167,7 @@ export default function InvoiceTemplateSettings() {
                 })}
               </div>
               <p className="mt-3 rounded-md bg-amber-50 p-2 text-xs leading-5 text-amber-900">
-                {tc("رمز التحقق الضريبي النظامي لا يمكن إخفاؤه عند توفر بياناته. يمكنك إيقاف باركود التتبع والروابط المخصصة أعلاه.", "The statutory tax-verification QR remains visible when its data is available. You can turn off the tracking QR and custom links above.")}
+                {tc("الباركود الخطي يحمل رقم الطلب فقط، وQR التتبع يفتح صفحة متابعة الطلب؛ إذا لم تستخدم قارئًا أو متابعة الطلب فأوقف هذا الخيار. رمز ZATCA الضريبي يبقى ظاهرًا عند توفر بياناته.", "The linear barcode contains only the order number; the tracking QR opens the order-status page. Turn this off if you do not use scanning or order tracking. The ZATCA tax QR remains when its data is available.")}
               </p>
             </section>
 

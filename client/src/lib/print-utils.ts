@@ -4,6 +4,40 @@ import { VAT_RATE } from "@/lib/constants";
 import brand from "@/lib/brand";
 import { isAppleMobileBrowser } from "@/lib/print-capabilities";
 import type { PrintResult } from "@/lib/thermal-printer";
+import { normalizeReceiptTemplate, type ReceiptSurface, type ReceiptTemplateConfig } from "@shared/receipt-template";
+
+async function loadReceiptTemplate(): Promise<ReceiptTemplateConfig> {
+  try {
+    const response = await fetch("/api/business-config", { credentials: "same-origin" });
+    if (!response.ok) throw new Error(`Invoice settings request failed (${response.status})`);
+    const config = await response.json();
+    return normalizeReceiptTemplate(config?.receiptTemplate);
+  } catch (error) {
+    console.warn("[Receipt] Could not load saved invoice settings; keeping the current receipt layout.", error);
+    return normalizeReceiptTemplate(null);
+  }
+}
+
+async function makeCustomReceiptCodes(template: ReceiptTemplateConfig, surface: ReceiptSurface) {
+  return Promise.all(template.customCodes
+    .filter(code => code.enabled && code.page === surface)
+    .map(async code => ({
+      id: code.id,
+      label: code.label,
+      qrDataUrl: await QRCode.toDataURL(code.url, { width: 180, margin: 1, errorCorrectionLevel: "M" }),
+    })));
+}
+
+const escapeReceiptText = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, character => ({
+  "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+}[character]!));
+
+function receiptHiddenSectionCss(template: ReceiptTemplateConfig): string {
+  return Object.entries(template.display)
+    .filter(([, visible]) => !visible)
+    .map(([key]) => `[data-invoice-section="${key}"]{display:none!important;}`)
+    .join("");
+}
 
 // ── ZATCA QR pre-generation cache ────────────────────────────────────────────
 // Key: `zatca:${orderNumber}:${total}` → SVG string
@@ -921,6 +955,8 @@ async function _buildFastCustomerEscPos(
   feedLines: number,
 ): Promise<Uint8Array> {
   const { buildReceiptBitmapEscPos } = await import('./thermal-printer');
+  const template = await loadReceiptTemplate();
+  const customReceiptCodes = await makeCustomReceiptCodes(template, "customer");
 
   const totalAmount = parseNumber(data.total);
   const subtotalBeforeVat = totalAmount / (1 + VAT_RATE);
@@ -943,6 +979,7 @@ async function _buildFastCustomerEscPos(
   const trackingNum = String(data.orderNumber).replace(/\D/g, '') || String(data.orderNumber);
   const [trackingQr, zatcaQr] = await Promise.all([
     (async () => {
+      if (!template.display.trackingBarcode) return "";
       try {
         const url = `${window.location.origin}/track/${trackingNum}`;
         return await QRCode.toDataURL(url, { width: 180, margin: 1, errorCorrectionLevel: 'M' });
@@ -955,12 +992,14 @@ async function _buildFastCustomerEscPos(
     })(),
   ]);
   let orderBarcode = '';
-  try {
-    const barcodeCanvas = document.createElement('canvas');
-    JsBarcode(barcodeCanvas, trackingNum, { format: 'CODE128', displayValue: true, height: 46, width: 2, margin: 5 });
-    orderBarcode = barcodeCanvas.toDataURL('image/png');
-  } catch (error) {
-    console.error('[Print] Could not generate order barcode:', error);
+  if (template.display.trackingBarcode) {
+    try {
+      const barcodeCanvas = document.createElement('canvas');
+      JsBarcode(barcodeCanvas, trackingNum, { format: 'CODE128', displayValue: true, height: 46, width: 2, margin: 5 });
+      orderBarcode = barcodeCanvas.toDataURL('image/png');
+    } catch (error) {
+      console.error('[Print] Could not generate order barcode:', error);
+    }
   }
 
   const payLabel = (() => {
@@ -1005,9 +1044,13 @@ async function _buildFastCustomerEscPos(
     paymentMethod: payLabel,
     ...(data.cashReceived ? { cashReceived: data.cashReceived } : {}),
     logoDataUrl: '/elwa-invoice-logo.png?v=4',
+    campaignHeaderDataUrl: template.mode === "campaign" ? "/invoice-campaign-header.png" : undefined,
     orderBarcodeDataUrl: orderBarcode || undefined,
     trackingQrDataUrl: trackingQr || undefined,
     zatcaQrDataUrl: zatcaQr || undefined,
+    notes: data.notes,
+    receiptTemplate: template,
+    customCodes: customReceiptCodes,
     paperWidth,
     feedLines,
   });
@@ -1207,6 +1250,11 @@ function formatDate(dateStr: string): { date: string; time: string } {
 
 /** Build a visual HTML receipt for preview using the supplied Elwa invoice logo. */
 export async function buildReceiptPreviewHtml(data: TaxInvoiceData): Promise<string> {
+  const template = await loadReceiptTemplate();
+  const display = template.display;
+  const customCodes = await makeCustomReceiptCodes(template, "customer");
+  const hiddenSectionCss = receiptHiddenSectionCss(template);
+  const campaignSelected = template.mode === "campaign";
   const totalAmount = parseNumber(data.total);
   const subtotalBeforeVat = totalAmount / (1 + VAT_RATE);
   const vat = totalAmount - subtotalBeforeVat;
@@ -1215,12 +1263,14 @@ export async function buildReceiptPreviewHtml(data: TaxInvoiceData): Promise<str
   const orderNumDisplay = String(data.orderNumber).replace(/\D/g, '').padStart(4, '0') || data.orderNumber;
   const trackingNum = String(data.orderNumber).replace(/\D/g, '') || String(data.orderNumber);
   let orderBarcodeDataUrl = '';
-  try {
-    const barcodeCanvas = document.createElement('canvas');
-    JsBarcode(barcodeCanvas, trackingNum, { format: 'CODE128', displayValue: true, height: 42, width: 2, margin: 4 });
-    orderBarcodeDataUrl = barcodeCanvas.toDataURL('image/png');
-  } catch (error) {
-    console.error('[Print] Could not generate order barcode:', error);
+  if (template.display.trackingBarcode) {
+    try {
+      const barcodeCanvas = document.createElement('canvas');
+      JsBarcode(barcodeCanvas, trackingNum, { format: 'CODE128', displayValue: true, height: 42, width: 2, margin: 4 });
+      orderBarcodeDataUrl = barcodeCanvas.toDataURL('image/png');
+    } catch (error) {
+      console.error('[Print] Could not generate order barcode:', error);
+    }
   }
 
   const orderTypeStr = (data.orderTypeName || (data.orderType as string) || '');
@@ -1311,10 +1361,18 @@ export async function buildReceiptPreviewHtml(data: TaxInvoiceData): Promise<str
   </div>` : '';
 
   // ── Elwa receipt header ──
-  const elwaHeaderHtml = `
-    <div style="text-align:center;padding:6px 0 10px;">
-      <img src="/elwa-invoice-logo.png?v=4" alt="إلوة" style="width:110px;height:auto;max-height:56px;object-fit:contain;display:block;margin:0 auto;">
-    </div>`;
+  const elwaHeaderHtml = campaignSelected
+    ? `<img class="campaign-art" src="/invoice-campaign-header.png" alt="بالغوا بالدفاع عن وطنكم">`
+    : template.display.logo
+      ? `<div data-invoice-section="logo" style="text-align:center;padding:6px 0 10px;">
+          <img src="/elwa-invoice-logo.png?v=4" alt="إلوة" style="width:110px;height:auto;max-height:56px;object-fit:contain;display:block;margin:0 auto;">
+        </div>`
+      : "";
+  const customCodesHtml = customCodes.map(code => `
+    <div style="text-align:center;margin:8px 0;">
+      <div style="font-weight:bold;font-size:12px;">${escapeReceiptText(code.label)}</div>
+      <img src="${code.qrDataUrl}" alt="" style="width:100px;height:100px;">
+    </div>`).join("");
 
   return `<!DOCTYPE html><html dir="rtl"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
@@ -1322,6 +1380,7 @@ export async function buildReceiptPreviewHtml(data: TaxInvoiceData): Promise<str
 *{margin:0;padding:0;box-sizing:border-box;}
 body{font-family:'Cairo',Tahoma,Arial,sans-serif;direction:rtl;background:#d6d6d6;display:flex;justify-content:center;align-items:flex-start;padding:24px 10px;min-height:100vh;color:#000;}
 .paper{background:#fff;width:302px;padding:12px 12px 10px;box-shadow:0 2px 8px rgba(0,0,0,.18),0 8px 32px rgba(0,0,0,.12);}
+.campaign-art{display:block;width:calc(100% + 24px);max-width:none;height:auto;margin:-12px -12px 0;}
 .label{background:#000;color:#fff;padding:2px 8px;border-radius:4px;font-size:13px;font-weight:bold;margin-bottom:8px;display:inline-block;}
 .header{text-align:center;border-bottom:1px solid #000;padding-bottom:10px;margin-bottom:10px;}
 .website{font-size:13px;font-weight:bold;color:#b45309;margin-bottom:4px;}
@@ -1349,6 +1408,7 @@ body{font-family:'Cairo',Tahoma,Arial,sans-serif;direction:rtl;background:#d6d6d
 .loyalty-box{margin:8px 0 4px;background:#f0fdf4;border:1px solid #86efac;border-radius:6px;padding:6px 10px;text-align:center;font-size:11px;color:#166534;font-weight:700;}
 .qr-container{text-align:center;margin-top:10px;}
 .footer{text-align:center;margin-top:12px;font-size:11px;color:#666;}
+${hiddenSectionCss}
 @media print{
   @page{size:80mm auto;margin:0;}
   body{background:#fff!important;padding:0!important;display:block!important;}
@@ -1358,31 +1418,32 @@ body{font-family:'Cairo',Tahoma,Arial,sans-serif;direction:rtl;background:#d6d6d
 
   <!-- ══ رأس الفاتورة ══ -->
   <div class="header">
-    <div class="label">إيصال العميل (فاتورة ضريبية)</div>
+    ${campaignSelected ? "" : `<div class="label">إيصال العميل (فاتورة ضريبية)</div>`}
     ${elwaHeaderHtml}
-    <div class="website">${brand.website}</div>
-    <div class="head-line">الرقم الضريبي: ${data.vatNumber || VAT_NUMBER}</div>
-    <div class="order-line">رقم الطلب: #${orderNumDisplay}</div>
-    ${orderBarcodeDataUrl ? `<div class="order-barcode"><img src="${orderBarcodeDataUrl}" alt="باركود الطلب"></div>` : ''}
-    <div class="head-line" style="direction:ltr;">${fmtDate} ${fmtTime}</div>
+    ${!campaignSelected ? `<div class="website" data-invoice-section="poweredBy">${brand.website}</div>` : ''}
+    ${display.legalInfo ? `<div class="head-line" data-invoice-section="legalInfo">الرقم الضريبي: ${data.vatNumber || VAT_NUMBER}</div>` : ''}
+    ${display.orderNumber ? `<div class="order-line" data-invoice-section="orderNumber">رقم الطلب: #${orderNumDisplay}</div>` : ''}
+    ${orderBarcodeDataUrl ? `<div class="order-barcode" data-invoice-section="trackingBarcode"><img src="${orderBarcodeDataUrl}" alt="باركود الطلب"></div>` : ''}
+    ${display.date ? `<div class="head-line" data-invoice-section="date" style="direction:ltr;">${fmtDate} ${fmtTime}</div>` : ''}
   </div>
 
   <!-- ══ بيانات الطلب ══ -->
   <div class="info-block">
-    <div>${orderTypeLabel ? `نوع الطلب: ${orderTypeLabel}` : ''}</div>
-    ${data.tableNumber ? `<div>طاولة: ${data.tableNumber}</div>` : ''}
-    ${data.employeeName ? `<div>الموظف: ${data.employeeName}</div>` : ''}
+    ${display.orderType ? `<div data-invoice-section="orderType">${orderTypeLabel ? `نوع الطلب: ${orderTypeLabel}` : ''}</div>` : ''}
+    ${display.branchInfo && data.branchName ? `<div data-invoice-section="branchInfo">${escapeReceiptText(data.branchName)}</div>` : ''}
+    ${data.tableNumber ? `<div data-invoice-section="orderType">طاولة: ${data.tableNumber}</div>` : ''}
+    ${display.cashier && data.employeeName ? `<div data-invoice-section="cashier">الموظف: ${data.employeeName}</div>` : ''}
   </div>
 
   <!-- ══ الأصناف ══ -->
-  ${data.items.map(item => {
+  ${template.display.items ? data.items.map(item => {
     const up = getItemUnitPrice(item);
     const itemDisc = parseNumber(item.itemDiscount);
     const lineTotal = item.quantity * up - itemDisc;
     const addons = getItemAddons(item).map((a: any) => a.nameAr).join('، ');
     const sz = getItemSelectedSize(item);
     const extra = [sz ? `الحجم: ${sz}` : '', addons ? `+ ${addons}` : ''].filter(Boolean).join(' · ');
-    return `<div class="item-row">
+    return `<div class="item-row" data-invoice-section="items">
       <div class="item-name">
         ${item.coffeeItem.nameAr} &times;${item.quantity}
         ${extra ? `<div class="item-extra">${extra}</div>` : ''}
@@ -1390,19 +1451,19 @@ body{font-family:'Cairo',Tahoma,Arial,sans-serif;direction:rtl;background:#d6d6d
       </div>
       <div class="item-price">${lineTotal.toFixed(2)}</div>
     </div>`;
-  }).join('')}
+  }).join('') : ''}
 
   <!-- ══ الحساب ══ -->
   <div class="totals">
-    <div class="row"><span>المجموع (غير شامل الضريبة):</span><span>${subtotalBeforeVat.toFixed(2)} ر.س</span></div>
-    <div class="row"><span>ضريبة القيمة المضافة (15%):</span><span>${vat.toFixed(2)} ر.س</span></div>
-    ${disc > 0 ? `<div class="row" style="color:#16a34a;"><span>الخصم:</span><span>-${disc.toFixed(2)} ر.س</span></div>` : ''}
-    <div class="row total"><span>الإجمالي شامل الضريبة:</span><span>${totalAmount.toFixed(2)} ر.س</span></div>
-    <div class="row" style="margin-top:5px;font-size:11px;"><span>طريقة الدفع:</span><span>${pmIcon} ${pmLabel}</span></div>
-    ${data.splitPayment ? `
-    <div class="split-row row">${data.splitPayment.cash > 0 ? `<span>نقدي: ${data.splitPayment.cash.toFixed(2)}</span>` : '<span></span>'}${data.splitPayment.card > 0 ? `<span>شبكة: ${data.splitPayment.card.toFixed(2)}</span>` : ''}</div>` : ''}
-    ${(data.cashReceived && data.cashReceived > 0 && !data.splitPayment) ? `
-    <div class="change-box">
+    ${template.display.totals ? `<div data-invoice-section="totals" class="row"><span>المجموع (غير شامل الضريبة):</span><span>${subtotalBeforeVat.toFixed(2)} ر.س</span></div>
+    <div data-invoice-section="totals" class="row"><span>ضريبة القيمة المضافة (15%):</span><span>${vat.toFixed(2)} ر.س</span></div>
+    ${disc > 0 ? `<div data-invoice-section="totals" class="row" style="color:#16a34a;"><span>الخصم:</span><span>-${disc.toFixed(2)} ر.س</span></div>` : ''}
+    <div data-invoice-section="totals" class="row total"><span>الإجمالي شامل الضريبة:</span><span>${totalAmount.toFixed(2)} ر.س</span></div>` : ''}
+    ${template.display.payment ? `<div data-invoice-section="payment" class="row" style="margin-top:5px;font-size:11px;"><span>طريقة الدفع:</span><span>${pmIcon} ${pmLabel}</span></div>` : ''}
+    ${template.display.payment && data.splitPayment ? `
+    <div data-invoice-section="payment" class="split-row row">${data.splitPayment.cash > 0 ? `<span>نقدي: ${data.splitPayment.cash.toFixed(2)}</span>` : '<span></span>'}${data.splitPayment.card > 0 ? `<span>شبكة: ${data.splitPayment.card.toFixed(2)}</span>` : ''}</div>` : ''}
+    ${template.display.payment && data.cashReceived && data.cashReceived > 0 && !data.splitPayment ? `
+    <div data-invoice-section="payment" class="change-box">
       <div class="change-row"><span>المبلغ المستلم:</span><span>${data.cashReceived.toFixed(2)} ر.س</span></div>
       <div class="change-row" style="font-weight:900;font-size:13px;margin-top:2px;"><span>الباقي للعميل:</span><span>${Math.max(0, data.cashReceived - totalAmount).toFixed(2)} ر.س</span></div>
     </div>` : ''}
@@ -1412,18 +1473,19 @@ body{font-family:'Cairo',Tahoma,Arial,sans-serif;direction:rtl;background:#d6d6d
   ${carInfoHtml}
 
   <!-- ══ ملاحظات ══ -->
-  ${(data as any).notes ? `<div class="notes-box"><strong>ملاحظات:</strong> ${(data as any).notes}</div>` : ''}
+  ${template.display.notes && (data as any).notes ? `<div data-invoice-section="notes" class="notes-box"><strong>ملاحظات:</strong> ${escapeReceiptText((data as any).notes)}</div>` : ''}
 
   <!-- ══ كود QR ZATCA ══ -->
   ${zatcaQrSvg ? `<div class="qr-container">${zatcaQrSvg}<div style="font-size:10px;margin-top:4px;">امسح للتحقق من الفاتورة</div></div>` : ''}
+  ${customCodesHtml}
 
   <!-- ══ نقاط الولاء ══ -->
   ${(data as any).loyaltyPoints ? `<div class="loyalty-box">⭐ +${(data as any).loyaltyPoints} نقطة أضيفت لرصيدك</div>` : ''}
 
   <!-- ══ التذييل ══ -->
   <div class="footer">
-    <div style="font-weight:bold;margin-bottom:4px;">${brand.website}</div>
-    شكراً لزيارتكم!
+    <div data-invoice-section="poweredBy" style="font-weight:bold;margin-bottom:4px;">${brand.website}</div>
+    ${template.display.thankYou ? `<span data-invoice-section="thankYou">شكراً لزيارتكم!</span>` : ''}
   </div>
 
 </div></body></html>`;
@@ -1872,27 +1934,38 @@ export async function printA4TaxInvoice(data: TaxInvoiceData): Promise<void> {
 }
 
 export async function printCustomerPickupReceipt(data: TaxInvoiceData & { deliveryType?: string; deliveryTypeAr?: string }): Promise<void> {
+  const template = await loadReceiptTemplate();
+  const customCodes = await makeCustomReceiptCodes(template, "customer");
   const _trackNum = String(data.orderNumber).replace(/\D/g, '') || String(data.orderNumber);
   const orderTrackingUrl = `${window.location.origin}/track/${_trackNum}`;
   
   let qrCodeSvg = "";
-  try {
-    const svgStr = await QRCode.toString(orderTrackingUrl, { type: 'svg', width: 100, margin: 1, errorCorrectionLevel: 'M' });
-    qrCodeSvg = svgStr.replace(/<\?xml[^?]*\?>/g, '').replace(/width="\d+"/, 'width="100"').replace(/height="\d+"/, 'height="100"');
-  } catch (error) {
-    console.error("Error generating order tracking QR:", error);
+  if (template.display.trackingBarcode) {
+    try {
+      const svgStr = await QRCode.toString(orderTrackingUrl, { type: 'svg', width: 100, margin: 1, errorCorrectionLevel: 'M' });
+      qrCodeSvg = svgStr.replace(/<\?xml[^?]*\?>/g, '').replace(/width="\d+"/, 'width="100"').replace(/height="\d+"/, 'height="100"');
+    } catch (error) {
+      console.error("Error generating order tracking QR:", error);
+    }
   }
   let orderBarcodeDataUrl = "";
-  try {
-    const barcodeCanvas = document.createElement('canvas');
-    JsBarcode(barcodeCanvas, _trackNum, { format: 'CODE128', displayValue: true, height: 46, width: 2, margin: 5 });
-    orderBarcodeDataUrl = barcodeCanvas.toDataURL('image/png');
-  } catch (error) {
-    console.error("Error generating order barcode:", error);
+  if (template.display.trackingBarcode) {
+    try {
+      const barcodeCanvas = document.createElement('canvas');
+      JsBarcode(barcodeCanvas, _trackNum, { format: 'CODE128', displayValue: true, height: 46, width: 2, margin: 5 });
+      orderBarcodeDataUrl = barcodeCanvas.toDataURL('image/png');
+    } catch (error) {
+      console.error("Error generating order barcode:", error);
+    }
   }
 
   const { date: formattedDate, time: formattedTime } = formatDate(data.date);
   const deliveryTypeAr = data.deliveryTypeAr || (data.deliveryType === 'dine-in' ? 'في الكافيه' : data.deliveryType === 'delivery' ? 'توصيل' : 'استلام');
+  const customCodesHtml = customCodes.map(code => `
+    <div style="text-align:center;margin:8px 0;">
+      <div style="font-weight:bold;font-size:12px;">${escapeReceiptText(code.label)}</div>
+      <img src="${code.qrDataUrl}" alt="" style="width:100px;height:100px;">
+    </div>`).join("");
 
   const receiptHtml = `
 <!DOCTYPE html>
@@ -1927,40 +2000,45 @@ export async function printCustomerPickupReceipt(data: TaxInvoiceData & { delive
     .qr-container svg { width: 120px; height: 120px; }
     .qr-note { font-size: 11px; color: #666; margin-top: 8px; }
     .footer { text-align: center; padding-top: 16px; font-size: 12px; color: #666; }
+    .campaign-art { display:block; width:calc(100% + 32px); max-width:none; height:auto; margin:-16px -16px 0; }
+    .campaign-order { margin:0 0 16px!important; }
+    ${receiptHiddenSectionCss(template)}
     @media print { body { margin: 0; } .no-print { display: none !important; } }
   </style>
 </head>
 <body>
   <div class="receipt">
     <div class="header">
-      <img class="brand-logo" src="/elwa-invoice-logo.png?v=4" alt="إلوة">
-      <h1 class="company-name">${COMPANY_NAME}</h1>
-      <p style="color: #666; font-size: 14px;">إيصال الاستلام</p>
-      <div class="order-badge">
+      ${template.mode === "campaign"
+        ? `<img class="campaign-art" src="/invoice-campaign-header.png" alt="بالغوا بالدفاع عن وطنكم">`
+        : `${template.display.logo ? `<img data-invoice-section="logo" class="brand-logo" src="/elwa-invoice-logo.png?v=4" alt="إلوة">` : ""}
+           ${template.display.businessDetails ? `<h1 data-invoice-section="businessDetails" class="company-name">${COMPANY_NAME}</h1>` : ""}
+           <p style="color: #666; font-size: 14px;">إيصال الاستلام</p>`}
+      ${template.display.orderNumber ? `<div class="order-badge ${template.mode === "campaign" ? "campaign-order" : ""}" data-invoice-section="orderNumber">
         <div class="order-number">${fmtOrderNum(data.orderNumber)}</div>
-      </div>
-      ${orderBarcodeDataUrl ? `<img class="order-barcode" src="${orderBarcodeDataUrl}" alt="باركود الطلب ${fmtOrderNum(data.orderNumber)}">` : ''}
-      <div class="order-type">${deliveryTypeAr}</div>
+      </div>` : ''}
+      ${orderBarcodeDataUrl ? `<img data-invoice-section="trackingBarcode" class="order-barcode" src="${orderBarcodeDataUrl}" alt="باركود الطلب ${fmtOrderNum(data.orderNumber)}">` : ''}
+      <div data-invoice-section="orderType" class="order-type">${deliveryTypeAr}</div>
     </div>
 
     <div class="section">
-      <div class="info-row">
+      ${template.display.customer ? `<div class="info-row" data-invoice-section="customer">
         <span>العميل:</span>
-        <span style="font-weight: 600;">${data.customerName}</span>
-      </div>
-      <div class="info-row">
+        <span style="font-weight: 600;">${escapeReceiptText(data.customerName)}</span>
+      </div>` : ''}
+      ${template.display.date ? `<div class="info-row" data-invoice-section="date">
         <span>التاريخ:</span>
         <span>${formattedDate} - ${formattedTime}</span>
-      </div>
+      </div>` : ''}
       ${data.tableNumber ? `
-      <div class="info-row">
+      <div class="info-row" data-invoice-section="orderType">
         <span>الطاولة:</span>
-        <span style="font-weight: 700; font-size: 18px;">${data.tableNumber}</span>
+        <span style="font-weight: 700; font-size: 18px;">${escapeReceiptText(data.tableNumber)}</span>
       </div>
       ` : ''}
     </div>
 
-    <div class="items-section">
+    ${template.display.items ? `<div class="items-section" data-invoice-section="items">
       ${data.items.map(item => {
         const addons = getItemAddons(item).map((a: any) => a.nameAr).join('، ');
         return `
@@ -1972,26 +2050,27 @@ export async function printCustomerPickupReceipt(data: TaxInvoiceData & { delive
           <span class="item-qty">x${item.quantity}</span>
         </div>`;
       }).join('')}
-    </div>
+    </div>` : ''}
 
-    <div class="total-section">
+    ${template.display.totals ? `<div class="total-section" data-invoice-section="totals">
       <p style="font-size: 14px; color: #92400e;">الإجمالي المدفوع</p>
       <p class="total-amount">${data.total} ر.س</p>
-      <p style="font-size: 12px; color: #666; margin-top: 4px;">${data.paymentMethod}</p>
-    </div>
+      ${template.display.payment ? `<p data-invoice-section="payment" style="font-size: 12px; color: #666; margin-top: 4px;">${escapeReceiptText(data.paymentMethod)}</p>` : ''}
+    </div>` : ''}
 
     ${qrCodeSvg ? `
-    <div class="qr-section">
+    <div class="qr-section" data-invoice-section="trackingBarcode">
       <div class="qr-title">تتبع الطلب</div>
       <div class="qr-container">${qrCodeSvg}</div>
       <div class="qr-note">امسح الرمز لمتابعة حالة الطلب</div>
     </div>
     ` : ''}
+    ${customCodesHtml}
 
     <div class="footer">
-      <p style="font-weight: 600;">شكراً لزيارتكم</p>
-      <p>نتمنى لكم تجربة ممتعة</p>
-      <p style="margin-top: 8px;">@ELWA</p>
+      ${template.display.thankYou ? `<p data-invoice-section="thankYou" style="font-weight: 600;">شكراً لزيارتكم</p>
+      <p data-invoice-section="thankYou">نتمنى لكم تجربة ممتعة</p>` : ''}
+      ${template.display.poweredBy ? `<p data-invoice-section="poweredBy" style="margin-top: 8px;">@ELWA</p>` : ''}
     </div>
   </div>
 </body>

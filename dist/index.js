@@ -622,6 +622,7 @@ var init_schema = __esm({
       prepBaseMinutes: { type: Number, default: 10 },
       prepExtraMinutesPerItem: { type: Number, default: 3 },
       prepFreeItemCount: { type: Number, default: 2 },
+      receiptTemplate: { type: Schema.Types.Mixed, default: null },
       createdAt: { type: Date, default: Date.now },
       updatedAt: { type: Date, default: Date.now }
     });
@@ -9088,7 +9089,7 @@ import crypto6 from "crypto";
 init_schema();
 import { Router } from "express";
 import { randomBytes, createHash } from "node:crypto";
-import { z as z2 } from "zod";
+import { z as z3 } from "zod";
 import rateLimit from "express-rate-limit";
 
 // server/middleware/auth.ts
@@ -9279,6 +9280,95 @@ var ReceiptPrintJob = mongoose4.models.ReceiptPrintJob || mongoose4.model("Recei
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import QRCode from "qrcode";
+
+// shared/receipt-template.ts
+import { z as z2 } from "zod";
+var receiptSurfaces = ["customer", "employee", "thermal"];
+var defaultReceiptTemplate = {
+  mode: "default",
+  display: {
+    orderNumber: true,
+    logo: true,
+    businessDetails: true,
+    branchInfo: true,
+    legalInfo: true,
+    cashier: true,
+    customer: true,
+    date: true,
+    orderType: true,
+    items: true,
+    itemCount: true,
+    totals: true,
+    payment: true,
+    notes: true,
+    trackingBarcode: true,
+    tagline: true,
+    thankYou: true,
+    poweredBy: true
+  },
+  accentColor: "#2D9B6E",
+  fontSize: "medium",
+  customCodes: []
+};
+var freshDefault = () => ({
+  ...defaultReceiptTemplate,
+  display: { ...defaultReceiptTemplate.display },
+  customCodes: []
+});
+var customCodeSchema = z2.object({
+  id: z2.string().trim().min(1).max(64),
+  enabled: z2.boolean(),
+  label: z2.string().trim().min(1).max(48),
+  url: z2.string().trim().url().max(500).refine((value) => {
+    try {
+      const parsed = new URL(value);
+      return ["http:", "https:"].includes(parsed.protocol) && !parsed.username && !parsed.password;
+    } catch {
+      return false;
+    }
+  }, "Barcode links must be HTTP or HTTPS URLs without credentials"),
+  page: z2.enum(receiptSurfaces)
+}).strict();
+var receiptTemplateSchema = z2.object({
+  mode: z2.enum(["default", "campaign", "custom"]),
+  display: z2.object({
+    orderNumber: z2.boolean(),
+    logo: z2.boolean(),
+    businessDetails: z2.boolean(),
+    branchInfo: z2.boolean(),
+    legalInfo: z2.boolean(),
+    cashier: z2.boolean(),
+    customer: z2.boolean(),
+    date: z2.boolean(),
+    orderType: z2.boolean(),
+    items: z2.boolean(),
+    itemCount: z2.boolean(),
+    totals: z2.boolean(),
+    payment: z2.boolean(),
+    notes: z2.boolean(),
+    trackingBarcode: z2.boolean(),
+    tagline: z2.boolean(),
+    thankYou: z2.boolean(),
+    poweredBy: z2.boolean()
+  }).strict(),
+  accentColor: z2.string().regex(/^#[0-9a-f]{6}$/i),
+  fontSize: z2.enum(["small", "medium", "large"]),
+  customCodes: z2.array(customCodeSchema).max(4)
+}).strict();
+function normalizeReceiptTemplate(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return freshDefault();
+  const input = value;
+  const merged = {
+    ...defaultReceiptTemplate,
+    ...input,
+    display: { ...defaultReceiptTemplate.display, ...input.display || {} },
+    customCodes: Array.isArray(input.customCodes) ? input.customCodes : []
+  };
+  const parsed = receiptTemplateSchema.safeParse(merged);
+  return parsed.success ? parsed.data : freshDefault();
+}
+
+// server/receipt-print/receipt.ts
 var escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({
   "&": "&amp;",
   "<": "&lt;",
@@ -9293,6 +9383,9 @@ function receiptHtml(order, business, width, assets = {}, reprint = false) {
   const items = typeof order.items === "string" ? JSON.parse(order.items) : order.items;
   if (!Array.isArray(items) || !items.length || items.length > 200) throw new Error("Invalid invoice items");
   const e = escapeHtml;
+  const template = normalizeReceiptTemplate(business.receiptTemplate);
+  const display = template.display;
+  const campaign = template.mode === "campaign";
   const safeImage = (s) => s && /^data:image\/(?:png|jpeg);base64,[A-Za-z0-9+/=]+$/.test(s) ? s : "";
   const rows = items.map((item) => {
     const name = item.coffeeItem?.nameAr || item.nameAr || item.name || item.productName || "\u2014";
@@ -9311,40 +9404,57 @@ function receiptHtml(order, business, width, assets = {}, reprint = false) {
   if (order.createdAt && !Number.isNaN(new Date(order.createdAt).getTime())) {
     date = new Date(order.createdAt).toLocaleString("en-GB", { timeZone: "Asia/Riyadh" });
   }
+  const customCodes = template.customCodes.filter((code) => code.enabled && code.page === "thermal" && safeImage(assets.customCodes?.[code.id])).map((code) => `<div class="custom-code"><p>${e(code.label)}</p><img class="qr" src="${safeImage(assets.customCodes?.[code.id])}" alt=""></div>`).join("");
+  const fontSize = template.mode !== "custom" || template.fontSize === "medium" ? 12 : template.fontSize === "small" ? 11 : 13;
+  const accent = template.mode === "custom" ? template.accentColor : "#000000";
   return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Receipt ${e(order.orderNumber)}</title>
 <style>
 @page { size: ${width}mm auto; margin: 0; }
 * { box-sizing: border-box; } html,body { margin:0; background:white; color:black; }
-body { width:${width}mm; padding:3mm; font:12px Arial,"Noto Sans Arabic",sans-serif; line-height:1.65; overflow-wrap:anywhere; }
-header,footer { text-align:center; } h1 { font-size:17px; margin:4px 0; } p { margin:3px 0; }
-img.logo { max-width:24mm; max-height:22mm; object-fit:contain; } img.qr { width:27mm; height:27mm; }
+ body { width:${width}mm; padding:3mm; font:${fontSize}px Arial,"Noto Sans Arabic",sans-serif; line-height:1.65; overflow-wrap:anywhere; }
+ header,footer { text-align:center; } h1 { font-size:17px; margin:4px 0; color:${accent}; } p { margin:3px 0; }
+ img.logo { max-width:24mm; max-height:22mm; object-fit:contain; }
+ img.campaign { display:block; width:calc(100% + 6mm); max-width:none; height:auto; margin:-3mm -3mm 2mm; }
+ .campaign-order { font-size:19px; font-weight:900; margin:0 0 5px; }
+ img.qr { width:27mm; height:27mm; }
 table { width:100%; border-collapse:collapse; margin:10px 0; } td,th { text-align:start; vertical-align:top; padding:4px 1px; border-bottom:1px dashed #888; }
 td:first-child { width:60%; } small { display:block; font-size:10px; }
-.summary { display:flex; justify-content:space-between; gap:8px; } .total { font-weight:bold; font-size:15px; border-top:1px solid; }
+ .summary { display:flex; justify-content:space-between; gap:8px; } .total { font-weight:bold; font-size:15px; border-top:1px solid; color:${accent}; }
+ .custom-code { text-align:center; margin:8px 0; } .custom-code p { font-weight:bold; }
 @media print { nav,button,aside { display:none!important; } body { -webkit-print-color-adjust:exact; print-color-adjust:exact; } tr { break-inside:avoid; } }
 </style></head><body>
-<header>${safeImage(assets.logo) ? `<img class="logo" src="${safeImage(assets.logo)}" alt="">` : ""}
-<h1>${e(business.tradeNameAr || business.businessName || "Elwa / \u0625\u0644\u0648\u0629")}</h1>
-${business.tradeNameEn ? `<p dir="ltr">${e(business.tradeNameEn)}</p>` : ""}
-${business.vatNumber ? `<p>\u0627\u0644\u0631\u0642\u0645 \u0627\u0644\u0636\u0631\u064A\u0628\u064A / VAT: ${e(business.vatNumber)}</p>` : ""}
-${business.commercialRegistration ? `<p>\u0627\u0644\u0633\u062C\u0644 \u0627\u0644\u062A\u062C\u0627\u0631\u064A / CR: ${e(business.commercialRegistration)}</p>` : ""}
-<p>\u0625\u064A\u0635\u0627\u0644 / Receipt: <b dir="ltr">${e(order.orderNumber)}</b></p><p dir="ltr">${e(date)}</p>
+<header>${campaign && safeImage(assets.campaign) ? `<img class="campaign" src="${safeImage(assets.campaign)}" alt="\u0628\u0627\u0644\u063A\u0648\u0627 \u0628\u0627\u0644\u062F\u0641\u0627\u0639 \u0639\u0646 \u0648\u0637\u0646\u0643\u0645">` : ""}
+${!campaign && display.logo && safeImage(assets.logo) ? `<img class="logo" src="${safeImage(assets.logo)}" alt="">` : ""}
+${campaign && display.orderNumber ? `<p class="campaign-order">\u0631\u0642\u0645 \u0627\u0644\u0637\u0644\u0628 / Order: <b dir="ltr">${e(order.orderNumber)}</b></p>` : ""}
+${display.businessDetails ? `<h1>${e(business.tradeNameAr || business.businessName || "Elwa / \u0625\u0644\u0648\u0629")}</h1>${business.tradeNameEn ? `<p dir="ltr">${e(business.tradeNameEn)}</p>` : ""}` : ""}
+${display.legalInfo && business.vatNumber ? `<p>\u0627\u0644\u0631\u0642\u0645 \u0627\u0644\u0636\u0631\u064A\u0628\u064A / VAT: ${e(business.vatNumber)}</p>` : ""}
+${display.legalInfo && business.commercialRegistration ? `<p>\u0627\u0644\u0633\u062C\u0644 \u0627\u0644\u062A\u062C\u0627\u0631\u064A / CR: ${e(business.commercialRegistration)}</p>` : ""}
+${!campaign && display.orderNumber ? `<p>\u0625\u064A\u0635\u0627\u0644 / Receipt: <b dir="ltr">${e(order.orderNumber)}</b></p>` : ""}
+${display.date ? `<p dir="ltr">${e(date)}</p>` : ""}
 ${reprint ? "<b>\u0625\u0639\u0627\u062F\u0629 \u0637\u0628\u0627\u0639\u0629 / REPRINT</b>" : ""}</header>
-${order.customerName ? `<p>\u0627\u0644\u0639\u0645\u064A\u0644 / Customer: ${e(order.customerName)}</p>` : ""}
-<table><thead><tr><th>\u0627\u0644\u0635\u0646\u0641 / Item</th><th>\u0627\u0644\u0639\u062F\u062F / Qty</th><th>\u0633\u0639\u0631 \u0627\u0644\u0648\u062D\u062F\u0629 / Unit</th></tr></thead><tbody>${rows}</tbody></table>
-${summary.map(([label, value], i) => `<div class="summary ${i === summary.length - 1 ? "total" : ""}"><span>${label}</span><span dir="ltr">${amount(value)} ${e(business.currency || "SAR")}</span></div>`).join("")}
-<p>\u0637\u0631\u064A\u0642\u0629 \u0627\u0644\u062F\u0641\u0639 / Payment: ${e(order.paymentMethod || "\u063A\u064A\u0631 \u0645\u0633\u062C\u0644\u0629 / Not recorded")}</p>
-<p>\u062D\u0627\u0644\u0629 \u0627\u0644\u062F\u0641\u0639 / Status: ${e(order.paymentStatus || "\u063A\u064A\u0631 \u0645\u0633\u062C\u0644\u0629 / Not recorded")}</p>
-<footer>${safeImage(assets.qr) ? `<img class="qr" src="${safeImage(assets.qr)}" alt="Tax QR">` : ""}<p>\u0634\u0643\u0631\u0627\u064B \u0644\u0632\u064A\u0627\u0631\u062A\u0643\u0645 / Thank you</p></footer>
+${display.customer && order.customerName ? `<p>\u0627\u0644\u0639\u0645\u064A\u0644 / Customer: ${e(order.customerName)}</p>` : ""}
+${display.items ? `<table><thead><tr><th>\u0627\u0644\u0635\u0646\u0641 / Item</th><th>\u0627\u0644\u0639\u062F\u062F / Qty</th><th>\u0633\u0639\u0631 \u0627\u0644\u0648\u062D\u062F\u0629 / Unit</th></tr></thead><tbody>${rows}</tbody></table>` : ""}
+${display.totals ? summary.map(([label, value], i) => `<div class="summary ${i === summary.length - 1 ? "total" : ""}"><span>${label}</span><span dir="ltr">${amount(value)} ${e(business.currency || "SAR")}</span></div>`).join("") : ""}
+${display.payment ? `<p>\u0637\u0631\u064A\u0642\u0629 \u0627\u0644\u062F\u0641\u0639 / Payment: ${e(order.paymentMethod || "\u063A\u064A\u0631 \u0645\u0633\u062C\u0644\u0629 / Not recorded")}</p><p>\u062D\u0627\u0644\u0629 \u0627\u0644\u062F\u0641\u0639 / Status: ${e(order.paymentStatus || "\u063A\u064A\u0631 \u0645\u0633\u062C\u0644\u0629 / Not recorded")}</p>` : ""}
+${customCodes}
+<footer>${safeImage(assets.qr) ? `<img class="qr" src="${safeImage(assets.qr)}" alt="Tax QR">` : ""}${display.thankYou ? `<p>\u0634\u0643\u0631\u0627\u064B \u0644\u0632\u064A\u0627\u0631\u062A\u0643\u0645 / Thank you</p>` : ""}</footer>
 </body></html>`;
 }
 async function renderReceipt(order, business, width, reprint = false) {
+  const template = normalizeReceiptTemplate(business.receiptTemplate);
   let logo;
+  let campaign;
   try {
     logo = `data:image/png;base64,${(await readFile(resolve("public/elwa-invoice-logo.png"))).toString("base64")}`;
   } catch {
+  }
+  if (template.mode === "campaign") {
+    try {
+      campaign = `data:image/png;base64,${(await readFile(resolve("public/invoice-campaign-header.png"))).toString("base64")}`;
+    } catch {
+    }
   }
   let qr;
   if (business.vatNumber && order.tax != null && order.createdAt && business.tradeNameAr) {
@@ -9356,7 +9466,11 @@ async function renderReceipt(order, business, width, reprint = false) {
     });
     qr = await QRCode.toDataURL(Buffer.concat(buffers).toString("base64"), { margin: 1, width: 140 });
   }
-  return receiptHtml(order, business, width, { logo, qr }, reprint);
+  const customCodes = {};
+  await Promise.all(template.customCodes.filter((code) => code.enabled && code.page === "thermal").map(async (code) => {
+    customCodes[code.id] = await QRCode.toDataURL(code.url, { margin: 1, width: 140, errorCorrectionLevel: "M" });
+  }));
+  return receiptHtml(order, business, width, { logo, campaign, qr, customCodes }, reprint);
 }
 
 // server/receipt-print/policy.ts
@@ -9369,9 +9483,9 @@ var canRetryJob = (status) => status === "failed";
 // server/receipt-print/routes.ts
 var router = Router();
 var hash = (s) => createHash("sha256").update(s).digest("hex");
-var id = z2.string().regex(/^[a-f0-9]{24}$/i);
-var key = z2.string().min(16).max(100).regex(/^[a-zA-Z0-9_-]+$/);
-var text = z2.string().trim().max(120);
+var id = z3.string().regex(/^[a-f0-9]{24}$/i);
+var key = z3.string().min(16).max(100).regex(/^[a-zA-Z0-9_-]+$/);
+var text = z3.string().trim().max(120);
 var fail = (status, message) => Object.assign(new Error(message), { status });
 var run = (fn) => (req, res, next) => {
   Promise.resolve(fn(req, res)).catch(next);
@@ -9450,7 +9564,7 @@ async function expireClaims(bridgeId) {
   );
 }
 router.post("/agent/pair", rateLimit({ windowMs: 3e5, max: 10 }), run(async (req, res) => {
-  const body = z2.object({ code: z2.string().regex(/^[A-Fa-f0-9]{16}$/) }).strict().parse(bodyWithoutServerTenant(req));
+  const body = z3.object({ code: z3.string().regex(/^[A-Fa-f0-9]{16}$/) }).strict().parse(bodyWithoutServerTenant(req));
   const token = randomBytes(32).toString("hex");
   const config2 = await ReceiptPrinter.findOneAndUpdate(
     { pairHash: hash(body.code.toUpperCase()), pairExpiresAt: { $gt: /* @__PURE__ */ new Date() } },
@@ -9479,7 +9593,7 @@ router.use("/agent", (req, res, next) => {
   })().catch(next);
 });
 router.post("/agent/poll", run(async (req, res) => {
-  z2.object({}).strict().parse(bodyWithoutServerTenant(req));
+  z3.object({}).strict().parse(bodyWithoutServerTenant(req));
   const config2 = req.bridge;
   await ReceiptPrinter.updateOne({ _id: config2._id }, { $set: { lastSeenAt: /* @__PURE__ */ new Date() } });
   await expireClaims(config2._id);
@@ -9496,11 +9610,11 @@ router.post("/agent/poll", run(async (req, res) => {
   res.json({ job: job ? { id: String(job._id), html: job.html, paperWidth: job.paperWidth, claimToken } : null });
 }));
 router.post("/agent/jobs/:id/result", run(async (req, res) => {
-  const body = z2.object({
-    claimToken: z2.string().regex(/^[a-f0-9]{64}$/),
-    status: z2.enum(["spooled", "completed", "failed", "unknown"]),
-    errorCode: z2.enum(["RENDER_FAILED", "DRIVER_UNAVAILABLE", "SPOOL_UNCERTAIN", "SPOOL_FAILED", "BRIDGE_INTERRUPTED"]).optional(),
-    spoolId: z2.string().regex(/^[a-zA-Z0-9_.-]{1,100}$/).optional()
+  const body = z3.object({
+    claimToken: z3.string().regex(/^[a-f0-9]{64}$/),
+    status: z3.enum(["spooled", "completed", "failed", "unknown"]),
+    errorCode: z3.enum(["RENDER_FAILED", "DRIVER_UNAVAILABLE", "SPOOL_UNCERTAIN", "SPOOL_FAILED", "BRIDGE_INTERRUPTED"]).optional(),
+    spoolId: z3.string().regex(/^[a-zA-Z0-9_.-]{1,100}$/).optional()
   }).strict().parse(bodyWithoutServerTenant(req));
   const job = await ReceiptPrintJob.findOne({
     _id: id.parse(req.params.id),
@@ -9530,17 +9644,17 @@ router.post("/agent/jobs/:id/result", run(async (req, res) => {
 }));
 router.use(requireAuth, requireCashierAccess);
 router.get("/config", run(async (req, res) => {
-  const scope = await branchScope(req, z2.string().max(100).optional().parse(req.query.branchId));
+  const scope = await branchScope(req, z3.string().max(100).optional().parse(req.query.branchId));
   res.json(publicConfig(await configFor(scope), req.employee));
 }));
 router.put("/config", manage, run(async (req, res) => {
-  const body = z2.object({
-    branchId: z2.string().min(1).max(100),
+  const body = z3.object({
+    branchId: z3.string().min(1).max(100),
     name: text,
     manufacturer: text,
     model: text,
-    paperWidth: z2.union([z2.literal(58), z2.literal(80)]),
-    adapter: z2.enum(["browser", "usb-bridge"])
+    paperWidth: z3.union([z3.literal(58), z3.literal(80)]),
+    adapter: z3.enum(["browser", "usb-bridge"])
   }).strict().parse(bodyWithoutServerTenant(req));
   const scope = await branchScope(req, body.branchId);
   const existing = await ReceiptPrinter.findOne(scope);
@@ -9551,7 +9665,7 @@ router.put("/config", manage, run(async (req, res) => {
   res.json(publicConfig(config2, req.employee));
 }));
 router.post("/pair-code", manage, run(async (req, res) => {
-  const body = z2.object({ branchId: z2.string().min(1).max(100) }).strict().parse(bodyWithoutServerTenant(req));
+  const body = z3.object({ branchId: z3.string().min(1).max(100) }).strict().parse(bodyWithoutServerTenant(req));
   const scope = await branchScope(req, body.branchId);
   const code = randomBytes(8).toString("hex").toUpperCase();
   const expiresAt = new Date(Date.now() + 3e5);
@@ -9563,7 +9677,7 @@ router.post("/pair-code", manage, run(async (req, res) => {
   res.json({ code, expiresAt, branchId: config2.branchId });
 }));
 router.post("/revoke", manage, run(async (req, res) => {
-  const body = z2.object({ branchId: z2.string().min(1).max(100) }).strict().parse(bodyWithoutServerTenant(req));
+  const body = z3.object({ branchId: z3.string().min(1).max(100) }).strict().parse(bodyWithoutServerTenant(req));
   const scope = await branchScope(req, body.branchId);
   const config2 = await ReceiptPrinter.findOneAndUpdate(
     scope,
@@ -9624,7 +9738,7 @@ async function createJob(req, data, res) {
   }
 }
 router.post("/jobs", run(async (req, res) => {
-  const body = z2.object({ orderId: id, idempotencyKey: key, reprint: z2.boolean().default(false) }).strict().parse(bodyWithoutServerTenant(req));
+  const body = z3.object({ orderId: id, idempotencyKey: key, reprint: z3.boolean().default(false) }).strict().parse(bodyWithoutServerTenant(req));
   if (body.reprint && !isPrintManager(req.employee)) throw fail(403, "Manager permission required for reprints");
   const order = await authorizedOrder(req, body.orderId);
   const config2 = await configFor({ tenantId: order.tenantId, branchId: order.branchId });
@@ -9639,7 +9753,7 @@ router.post("/jobs", run(async (req, res) => {
   }, res);
 }));
 router.post("/test", manage, run(async (req, res) => {
-  const body = z2.object({ branchId: z2.string().min(1).max(100), idempotencyKey: key }).strict().parse(bodyWithoutServerTenant(req));
+  const body = z3.object({ branchId: z3.string().min(1).max(100), idempotencyKey: key }).strict().parse(bodyWithoutServerTenant(req));
   const scope = await branchScope(req, body.branchId);
   const config2 = await configFor(scope);
   const html = receiptHtml(
@@ -9670,7 +9784,7 @@ router.get("/jobs/:id", run(async (req, res) => {
   });
 }));
 router.post("/jobs/:id/retry", run(async (req, res) => {
-  z2.object({}).strict().parse(bodyWithoutServerTenant(req));
+  z3.object({}).strict().parse(bodyWithoutServerTenant(req));
   const job = await authorizedJob(req, req.params.id);
   if ((job.isTest || job.reprint) && !isPrintManager(req.employee)) throw fail(403, "Manager required");
   if (job.orderId) await authorizedOrder(req, job.orderId);
@@ -9686,7 +9800,7 @@ router.post("/jobs/:id/retry", run(async (req, res) => {
   res.json(jobResult(retried));
 }));
 router.use((error, _req, res, _next) => {
-  const status = error instanceof z2.ZodError ? 400 : error.status || 500;
+  const status = error instanceof z3.ZodError ? 400 : error.status || 500;
   res.status(status).json({ error: status === 400 ? "Invalid print request" : status === 500 ? "Print service error" : error.message });
 });
 var routes_default = router;
@@ -13658,7 +13772,7 @@ var DeliveryService = class {
   }
   async checkPointInZone(lat, lng, tenantId, branchId) {
     const zones = await this.getAllZones(tenantId, branchId);
-    const activeZones = zones.filter((z3) => z3.isActive === 1);
+    const activeZones = zones.filter((z4) => z4.isActive === 1);
     for (const zone of activeZones) {
       if (zone.zoneType === "polygon" && zone.boundary && zone.boundary.length >= 3) {
         const polygon2 = turf.polygon([zone.boundary.map((p) => [p.lng, p.lat]).concat([[zone.boundary[0].lng, zone.boundary[0].lat]])]);
@@ -15451,7 +15565,13 @@ async function registerRoutes(app2) {
       const updates = req.body;
       const setMap = { updatedAt: /* @__PURE__ */ new Date() };
       for (const [key2, value] of Object.entries(updates)) {
-        setMap[key2] = value;
+        if (key2 === "receiptTemplate") {
+          const parsed = receiptTemplateSchema.safeParse(value);
+          if (!parsed.success) return res.status(400).json({ error: "Invalid invoice design settings" });
+          setMap[key2] = parsed.data;
+        } else {
+          setMap[key2] = value;
+        }
       }
       const config2 = await BusinessConfigModel.findOneAndUpdate(
         { tenantId },
@@ -24880,11 +25000,11 @@ async function registerRoutes(app2) {
       }
       const zones = await storage.getDeliveryZones();
       const { getDeliveryZoneForPoint: getDeliveryZoneForPoint2 } = await Promise.resolve().then(() => (init_geo(), geo_exports));
-      const mappedZones = zones.map((z3) => ({
-        coordinates: z3.boundary || [],
-        nameAr: z3.nameAr,
-        deliveryFee: z3.baseFee || 10,
-        _id: z3._id?.toString() || z3.id || ""
+      const mappedZones = zones.map((z4) => ({
+        coordinates: z4.boundary || [],
+        nameAr: z4.nameAr,
+        deliveryFee: z4.baseFee || 10,
+        _id: z4._id?.toString() || z4.id || ""
       }));
       const result = getDeliveryZoneForPoint2({ lat, lng }, mappedZones);
       if (!result) {
@@ -30161,13 +30281,13 @@ async function registerRoutes(app2) {
   app2.post("/api/menu-categories", requireAuth, requireManager, async (req, res) => {
     try {
       const { MenuCategoryModel: MenuCategoryModel2 } = await Promise.resolve().then(() => (init_schema(), schema_exports));
-      const { z: z3 } = await import("zod");
+      const { z: z4 } = await import("zod");
       const crypto7 = await import("crypto");
-      const createSchema = z3.object({
-        nameAr: z3.string().min(1, "\u0627\u0633\u0645 \u0627\u0644\u0642\u0633\u0645 \u0645\u0637\u0644\u0648\u0628"),
-        nameEn: z3.string().optional(),
-        icon: z3.string().optional(),
-        department: z3.enum(["drinks", "food"]).default("drinks")
+      const createSchema = z4.object({
+        nameAr: z4.string().min(1, "\u0627\u0633\u0645 \u0627\u0644\u0642\u0633\u0645 \u0645\u0637\u0644\u0648\u0628"),
+        nameEn: z4.string().optional(),
+        icon: z4.string().optional(),
+        department: z4.enum(["drinks", "food"]).default("drinks")
       });
       const validatedData = createSchema.parse(req.body);
       const tenantId = getTenantIdFromRequest(req) || process.env.TENANT_ID;
@@ -30201,13 +30321,13 @@ async function registerRoutes(app2) {
   app2.put("/api/menu-categories/:id", requireAuth, requireManager, async (req, res) => {
     try {
       const { MenuCategoryModel: MenuCategoryModel2 } = await Promise.resolve().then(() => (init_schema(), schema_exports));
-      const { z: z3 } = await import("zod");
-      const updateSchema = z3.object({
-        nameAr: z3.string().min(1).optional(),
-        nameEn: z3.string().optional(),
-        icon: z3.string().optional(),
-        department: z3.enum(["drinks", "food"]).optional(),
-        orderIndex: z3.number().optional()
+      const { z: z4 } = await import("zod");
+      const updateSchema = z4.object({
+        nameAr: z4.string().min(1).optional(),
+        nameEn: z4.string().optional(),
+        icon: z4.string().optional(),
+        department: z4.enum(["drinks", "food"]).optional(),
+        orderIndex: z4.number().optional()
       });
       const validatedData = updateSchema.parse(req.body);
       const tenantId = getTenantIdFromRequest(req) || process.env.TENANT_ID;
