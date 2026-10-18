@@ -9301,6 +9301,7 @@ var defaultReceiptTemplate = {
     totals: true,
     payment: true,
     notes: true,
+    orderBarcode: false,
     trackingBarcode: true,
     tagline: true,
     thankYou: true,
@@ -9346,6 +9347,7 @@ var receiptTemplateSchema = z2.object({
     totals: z2.boolean(),
     payment: z2.boolean(),
     notes: z2.boolean(),
+    orderBarcode: z2.boolean(),
     trackingBarcode: z2.boolean(),
     tagline: z2.boolean(),
     thankYou: z2.boolean(),
@@ -9384,6 +9386,8 @@ function receiptHtml(order, business, width, assets = {}, reprint = false) {
   if (!Array.isArray(items) || !items.length || items.length > 200) throw new Error("Invalid invoice items");
   const e = escapeHtml;
   const template = normalizeReceiptTemplate(business.receiptTemplate);
+  const vatNumber = business.vatNumber || "312718675800003";
+  const commercialRegistration = business.commercialRegistration || business.crNumber || "4030534754";
   const display = template.display;
   const campaign = template.mode === "campaign";
   const safeImage = (s) => s && /^data:image\/(?:png|jpeg);base64,[A-Za-z0-9+/=]+$/.test(s) ? s : "";
@@ -9417,7 +9421,7 @@ function receiptHtml(order, business, width, assets = {}, reprint = false) {
  header,footer { text-align:center; } h1 { font-size:17px; margin:4px 0; color:${accent}; } p { margin:3px 0; }
  img.logo { max-width:24mm; max-height:22mm; object-fit:contain; }
  img.campaign { display:block; width:calc(100% + 6mm); max-width:none; height:auto; margin:-3mm -3mm 2mm; }
- .campaign-order { font-size:19px; font-weight:900; margin:0 0 5px; }
+  .campaign-order { display:block; clear:both; position:relative; z-index:1; background:#fff; font-size:19px; font-weight:900; margin:6px 0 10px; padding:5px 0; border-top:1px dashed #999; border-bottom:1px dashed #999; }
  img.qr { width:27mm; height:27mm; }
 table { width:100%; border-collapse:collapse; margin:10px 0; } td,th { text-align:start; vertical-align:top; padding:4px 1px; border-bottom:1px dashed #888; }
 td:first-child { width:60%; } small { display:block; font-size:10px; }
@@ -9429,8 +9433,7 @@ td:first-child { width:60%; } small { display:block; font-size:10px; }
 ${!campaign && display.logo && safeImage(assets.logo) ? `<img class="logo" src="${safeImage(assets.logo)}" alt="">` : ""}
 ${campaign && display.orderNumber ? `<p class="campaign-order">\u0631\u0642\u0645 \u0627\u0644\u0637\u0644\u0628 / Order: <b dir="ltr">${e(order.orderNumber)}</b></p>` : ""}
 ${display.businessDetails ? `<h1>${e(business.tradeNameAr || business.businessName || "Elwa / \u0625\u0644\u0648\u0629")}</h1>${business.tradeNameEn ? `<p dir="ltr">${e(business.tradeNameEn)}</p>` : ""}` : ""}
-${display.legalInfo && business.vatNumber ? `<p>\u0627\u0644\u0631\u0642\u0645 \u0627\u0644\u0636\u0631\u064A\u0628\u064A / VAT: ${e(business.vatNumber)}</p>` : ""}
-${display.legalInfo && business.commercialRegistration ? `<p>\u0627\u0644\u0633\u062C\u0644 \u0627\u0644\u062A\u062C\u0627\u0631\u064A / CR: ${e(business.commercialRegistration)}</p>` : ""}
+${display.legalInfo ? `<p>\u0627\u0644\u0631\u0642\u0645 \u0627\u0644\u0636\u0631\u064A\u0628\u064A / VAT: ${e(vatNumber)}</p><p>\u0627\u0644\u0633\u062C\u0644 \u0627\u0644\u062A\u062C\u0627\u0631\u064A / CR: ${e(commercialRegistration)}</p>` : ""}
 ${!campaign && display.orderNumber ? `<p>\u0625\u064A\u0635\u0627\u0644 / Receipt: <b dir="ltr">${e(order.orderNumber)}</b></p>` : ""}
 ${display.date ? `<p dir="ltr">${e(date)}</p>` : ""}
 ${reprint ? "<b>\u0625\u0639\u0627\u062F\u0629 \u0637\u0628\u0627\u0639\u0629 / REPRINT</b>" : ""}</header>
@@ -9457,8 +9460,9 @@ async function renderReceipt(order, business, width, reprint = false) {
     }
   }
   let qr;
-  if (business.vatNumber && order.tax != null && order.createdAt && business.tradeNameAr) {
-    const fields = [business.tradeNameAr, business.vatNumber, new Date(order.createdAt).toISOString(), amount(order.totalAmount), amount(order.tax)];
+  const vatNumber = business.vatNumber || "312718675800003";
+  if (vatNumber && order.tax != null && order.createdAt) {
+    const fields = [business.tradeNameAr || "\u0625\u0644\u0648\u0629 \u0644\u0644\u0642\u0647\u0648\u0629 \u0627\u0644\u0645\u062E\u062A\u0635\u0629", vatNumber, new Date(order.createdAt).toISOString(), amount(order.totalAmount), amount(order.tax)];
     const buffers = fields.map((value, index) => {
       const text2 = Buffer.from(String(value), "utf8");
       if (text2.length > 255) throw new Error("Tax QR field too long");
@@ -29099,7 +29103,7 @@ async function registerRoutes(app2) {
       const config2 = await BusinessConfigModel.findOne({ tenantId });
       res.json({
         vatNumber: config2?.vatNumber || "",
-        crNumber: config2?.crNumber || "",
+        crNumber: config2?.commercialRegistration || config2?.crNumber || "",
         tradeNameAr: config2?.tradeNameAr || "",
         tradeNameEn: config2?.tradeNameEn || ""
       });
@@ -29114,7 +29118,7 @@ async function registerRoutes(app2) {
       const { vatNumber, crNumber, tradeNameAr, tradeNameEn, address, city, postalCode, buildingNumber } = req.body;
       const updateFields = {};
       if (vatNumber !== void 0) updateFields.vatNumber = vatNumber;
-      if (crNumber !== void 0) updateFields.crNumber = crNumber;
+      if (crNumber !== void 0) updateFields.commercialRegistration = crNumber;
       if (tradeNameAr !== void 0) updateFields.tradeNameAr = tradeNameAr;
       if (tradeNameEn !== void 0) updateFields.tradeNameEn = tradeNameEn;
       if (address !== void 0) updateFields.address = address;
@@ -29126,6 +29130,7 @@ async function registerRoutes(app2) {
         { $set: updateFields },
         { upsert: true }
       );
+      cache.invalidateKey(cacheKey("biz-config", tenantId));
       res.json({ success: true });
     } catch (error) {
       console.error("Error saving ZATCA settings:", error);

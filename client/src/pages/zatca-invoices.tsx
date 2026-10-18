@@ -198,6 +198,7 @@ export default function ZATCAInvoicesPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/zatca/settings"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/business-config"] });
       setIsSettingsOpen(false);
       toast({ title: tc("✓ تم حفظ إعدادات ZATCA", "✓ ZATCA settings saved") });
     },

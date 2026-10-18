@@ -21,6 +21,8 @@ export function receiptHtml(order: any, business: any, width: 58 | 80, assets: {
   if (!Array.isArray(items) || !items.length || items.length > 200) throw new Error("Invalid invoice items");
   const e = escapeHtml;
   const template = normalizeReceiptTemplate(business.receiptTemplate);
+  const vatNumber = business.vatNumber || "312718675800003";
+  const commercialRegistration = business.commercialRegistration || business.crNumber || "4030534754";
   const display = template.display;
   const campaign = template.mode === "campaign";
   const safeImage = (s?: string) => s && /^data:image\/(?:png|jpeg);base64,[A-Za-z0-9+/=]+$/.test(s) ? s : "";
@@ -59,7 +61,7 @@ export function receiptHtml(order: any, business: any, width: 58 | 80, assets: {
  header,footer { text-align:center; } h1 { font-size:17px; margin:4px 0; color:${accent}; } p { margin:3px 0; }
  img.logo { max-width:24mm; max-height:22mm; object-fit:contain; }
  img.campaign { display:block; width:calc(100% + 6mm); max-width:none; height:auto; margin:-3mm -3mm 2mm; }
- .campaign-order { font-size:19px; font-weight:900; margin:0 0 5px; }
+  .campaign-order { display:block; clear:both; position:relative; z-index:1; background:#fff; font-size:19px; font-weight:900; margin:6px 0 10px; padding:5px 0; border-top:1px dashed #999; border-bottom:1px dashed #999; }
  img.qr { width:27mm; height:27mm; }
 table { width:100%; border-collapse:collapse; margin:10px 0; } td,th { text-align:start; vertical-align:top; padding:4px 1px; border-bottom:1px dashed #888; }
 td:first-child { width:60%; } small { display:block; font-size:10px; }
@@ -71,8 +73,7 @@ td:first-child { width:60%; } small { display:block; font-size:10px; }
 ${!campaign && display.logo && safeImage(assets.logo) ? `<img class="logo" src="${safeImage(assets.logo)}" alt="">` : ""}
 ${campaign && display.orderNumber ? `<p class="campaign-order">رقم الطلب / Order: <b dir="ltr">${e(order.orderNumber)}</b></p>` : ""}
 ${display.businessDetails ? `<h1>${e(business.tradeNameAr || business.businessName || "Elwa / إلوة")}</h1>${business.tradeNameEn ? `<p dir="ltr">${e(business.tradeNameEn)}</p>` : ""}` : ""}
-${display.legalInfo && business.vatNumber ? `<p>الرقم الضريبي / VAT: ${e(business.vatNumber)}</p>` : ""}
-${display.legalInfo && business.commercialRegistration ? `<p>السجل التجاري / CR: ${e(business.commercialRegistration)}</p>` : ""}
+${display.legalInfo ? `<p>الرقم الضريبي / VAT: ${e(vatNumber)}</p><p>السجل التجاري / CR: ${e(commercialRegistration)}</p>` : ""}
 ${!campaign && display.orderNumber ? `<p>إيصال / Receipt: <b dir="ltr">${e(order.orderNumber)}</b></p>` : ""}
 ${display.date ? `<p dir="ltr">${e(date)}</p>` : ""}
 ${reprint ? "<b>إعادة طباعة / REPRINT</b>" : ""}</header>
@@ -98,8 +99,9 @@ export async function renderReceipt(order: any, business: any, width: 58 | 80, r
     } catch { /* The text receipt remains printable if the artwork is missing. */ }
   }
   let qr: string | undefined;
-  if (business.vatNumber && order.tax != null && order.createdAt && business.tradeNameAr) {
-    const fields = [business.tradeNameAr, business.vatNumber, new Date(order.createdAt).toISOString(), amount(order.totalAmount), amount(order.tax)];
+  const vatNumber = business.vatNumber || "312718675800003";
+  if (vatNumber && order.tax != null && order.createdAt) {
+    const fields = [business.tradeNameAr || "إلوة للقهوة المختصة", vatNumber, new Date(order.createdAt).toISOString(), amount(order.totalAmount), amount(order.tax)];
     const buffers = fields.map((value, index) => {
       const text = Buffer.from(String(value), "utf8");
       if (text.length > 255) throw new Error("Tax QR field too long");

@@ -18588,7 +18588,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const config = await BusinessConfigModel.findOne({ tenantId });
       res.json({
         vatNumber: config?.vatNumber || '',
-        crNumber: (config as any)?.crNumber || '',
+        crNumber: config?.commercialRegistration || (config as any)?.crNumber || '',
         tradeNameAr: config?.tradeNameAr || '',
         tradeNameEn: config?.tradeNameEn || '',
       });
@@ -18605,7 +18605,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { vatNumber, crNumber, tradeNameAr, tradeNameEn, address, city, postalCode, buildingNumber } = req.body;
       const updateFields: any = {};
       if (vatNumber !== undefined) updateFields.vatNumber = vatNumber;
-      if (crNumber !== undefined) updateFields.crNumber = crNumber;
+      if (crNumber !== undefined) updateFields.commercialRegistration = crNumber;
       if (tradeNameAr !== undefined) updateFields.tradeNameAr = tradeNameAr;
       if (tradeNameEn !== undefined) updateFields.tradeNameEn = tradeNameEn;
       if (address !== undefined) updateFields.address = address;
@@ -18617,6 +18617,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         { $set: updateFields },
         { upsert: true }
       );
+      cache.invalidateKey(cacheKey('biz-config', tenantId));
       res.json({ success: true });
     } catch (error) {
       console.error("Error saving ZATCA settings:", error);

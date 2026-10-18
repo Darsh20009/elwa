@@ -39,7 +39,6 @@ const displayOptions: Array<{ key: ReceiptDisplayKey; ar: string; en: string }> 
   { key: "totals", ar: "المجاميع والضريبة", en: "Totals and tax" },
   { key: "payment", ar: "طريقة الدفع", en: "Payment method" },
   { key: "notes", ar: "ملاحظات العميل", en: "Customer notes" },
-  { key: "trackingBarcode", ar: "باركود رقم الطلب والتتبع", en: "Order number and tracking codes" },
   { key: "tagline", ar: "عبارة المنشأة", en: "Business tagline" },
   { key: "thankYou", ar: "رسالة الشكر", en: "Thank-you message" },
   { key: "poweredBy", ar: "عبارة أسفل الفاتورة", en: "Receipt footer" },
@@ -167,7 +166,7 @@ export default function InvoiceTemplateSettings() {
                 })}
               </div>
               <p className="mt-3 rounded-md bg-amber-50 p-2 text-xs leading-5 text-amber-900">
-                {tc("الباركود الخطي يحمل رقم الطلب فقط، وQR التتبع يفتح صفحة متابعة الطلب؛ إذا لم تستخدم قارئًا أو متابعة الطلب فأوقف هذا الخيار. رمز ZATCA الضريبي يبقى ظاهرًا عند توفر بياناته.", "The linear barcode contains only the order number; the tracking QR opens the order-status page. Turn this off if you do not use scanning or order tracking. The ZATCA tax QR remains when its data is available.")}
+                {tc("الباركود الخطي يحمل رقم الطلب فقط. أما QR التتبع فيفتح صفحة حالة الطلب. يمكنك التحكم بكل واحد منهما من المعاينة.", "The linear barcode only contains the order number. The tracking QR opens order status. Control each separately from the preview.")}
               </p>
             </section>
 
@@ -262,13 +261,44 @@ export default function InvoiceTemplateSettings() {
               {campaign
                 ? <img src="/invoice-campaign-header.png" alt={tc("صورة حملة الدفاع عن الوطن", "Campaign artwork")} className="block h-auto w-full" />
                 : template.display.logo && <img src="/elwa-invoice-logo.png" alt={tc("شعار إلوة", "Elwa logo")} className="mx-auto my-3 h-auto w-28 object-contain" />}
-              {template.display.orderNumber && <p className="py-2 text-xl font-black">#{tc("رقم الطلب", "Order number")}</p>}
-              {template.display.businessDetails && <p className="font-bold">{tc("إلوة للقهوة المختصة", "Elwa Specialty Coffee")}</p>}
+              {template.display.orderNumber && <p className={`${campaign ? "mt-2 border-t border-dashed pt-2" : ""} py-2 text-xl font-black`}>#{tc("رقم الطلب", "Order number")}</p>}
+              {template.display.businessDetails && <p className="font-bold">{config.data?.tradeNameAr || tc("إلوة للقهوة المختصة", "Elwa Specialty Coffee")}</p>}
+              {template.display.legalInfo && (
+                <div className="px-2 pb-1 text-[9px] leading-4 text-gray-600">
+                  <p>{tc("الرقم الضريبي:", "VAT:")} {config.data?.vatNumber || "312718675800003"}</p>
+                  <p>{tc("السجل التجاري:", "CR:")} {config.data?.commercialRegistration || config.data?.crNumber || "4030534754"}</p>
+                </div>
+              )}
               {template.display.date && <p className="text-xs text-gray-500">{tc("التاريخ والوقت", "Date and time")}</p>}
               {template.display.items && <div className="mx-3 my-3 space-y-2 border-y border-dashed py-2 text-xs"><p>{tc("الصنف × 1", "Item × 1")}</p><p>{tc("المجموع", "Total")}</p></div>}
-              {template.customCodes.some(code => code.enabled) && <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center border border-dashed text-[10px]">{tc("QR", "QR")}</div>}
+              {template.display.orderBarcode && <div data-testid="preview-order-barcode" className="mx-auto my-2 h-7 w-4/5" style={{ background: "repeating-linear-gradient(90deg,#111 0 2px,#fff 2px 4px,#111 4px 5px,#fff 5px 8px)" }} />}
+              {template.display.trackingBarcode && <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center border border-dashed text-[10px]">{tc("QR تتبع", "Tracking QR")}</div>}
+              {template.customCodes.some(code => code.enabled) && <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center border border-dashed text-[10px]">{tc("QR مخصص", "Custom QR")}</div>}
               {template.display.thankYou && <p className="pb-3 text-xs">{tc("شكرًا لزيارتكم", "Thank you")}</p>}
             </div>
+            <div className="mt-3 space-y-2 border-t pt-3">
+              <p className="text-xs font-semibold">{tc("تحكم سريع من المعاينة", "Quick controls from preview")}</p>
+              {([
+                ["orderBarcode", tc("إظهار باركود الطلب الخطي", "Show linear order barcode")],
+                ["trackingBarcode", tc("إظهار QR تتبع الطلب", "Show order-tracking QR")],
+              ] as const).map(([key, label]) => (
+                <label key={key} className="flex items-center justify-between gap-2 text-xs">
+                  <span>{label}</span>
+                  <Switch
+                    checked={template.display[key]}
+                    disabled={saveMutation.isPending}
+                    onCheckedChange={checked => updateDisplay(key, checked)}
+                    aria-label={label}
+                    data-testid={`invoice-preview-toggle-${key}`}
+                  />
+                </label>
+              ))}
+            </div>
+            {template.display.legalInfo && !config.data?.vatNumber && (
+              <p className="mt-2 text-center text-[11px] leading-5 text-amber-700">
+                {tc("المعاينة تستخدم الرقم الافتراضي القديم؛ حدّثه من إعدادات ZATCA إذا كان رقم المنشأة مختلفًا.", "The preview uses the existing legacy VAT number; update it in ZATCA settings if the business number is different.")}
+              </p>
+            )}
             {campaign && <p className="mt-2 text-center text-xs text-muted-foreground">{tc("الصورة ممتدة بعرض الورقة، ويأتي رقم الطلب أسفلها.", "The artwork spans the paper width, with the order number immediately below.")}</p>}
           </aside>
         </div>

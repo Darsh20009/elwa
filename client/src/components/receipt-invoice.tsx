@@ -5,6 +5,7 @@ import { brand } from "@/lib/brand";
 import { useRef, useState, useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import QRCode from "qrcode";
+import JsBarcode from "jsbarcode";
 import { fmtOrderNum, printHtmlInPage, isAndroidDevice } from "@/lib/print-utils";
 import { useTranslate } from "@/lib/useTranslate";
 import { normalizeReceiptTemplate, type ReceiptSurface } from "@shared/receipt-template";
@@ -45,6 +46,7 @@ export function ReceiptInvoice({ order, variant = "button", precomputedTrackingQ
   const customCodeKey = JSON.stringify(customCodes);
   const [trackingQrUrl, setTrackingQrUrl] = useState<string>(precomputedTrackingQr || "");
   const [zatcaQrUrl, setZatcaQrUrl] = useState<string>(precomputedZatcaQr || "");
+  const [orderBarcodeUrl, setOrderBarcodeUrl] = useState<string>("");
   const [customQrUrls, setCustomQrUrls] = useState<Record<string, string>>({});
 
   const getItemsArray = (): any[] => {
@@ -65,6 +67,12 @@ export function ReceiptInvoice({ order, variant = "button", precomputedTrackingQ
   const totalAmount = parseNum(safeOrder.totalAmount);
   const subtotal = totalAmount / 1.15;
   const vat = totalAmount - subtotal;
+  const business = businessConfig.data || {};
+  const businessName = business.tradeNameAr || business.businessName || "إلوة";
+  const vatNumber = String(business.vatNumber || safeOrder.vatNumber || "312718675800003").trim();
+  const commercialRegistration = String(
+    business.commercialRegistration || business.crNumber || safeOrder.crNumber || "4030534754",
+  ).trim();
 
   // Step 1: Generate QR codes
   useEffect(() => {
@@ -75,11 +83,42 @@ export function ReceiptInvoice({ order, variant = "button", precomputedTrackingQ
         setTrackingQrUrl(await QRCode.toDataURL(url, { width: 200, margin: 1, errorCorrectionLevel: "M" }));
       } catch {}
       try {
-        const payload = btoa(`\x01\x10Elwa\x02\x0F312718675800003\x03\x14${new Date(order.createdAt).toISOString()}\x04\x08${totalAmount.toFixed(2)}\x05\x08${vat.toFixed(2)}`);
+        if (!vatNumber) {
+          setZatcaQrUrl("");
+          return;
+        }
+        const created = new Date(order.createdAt);
+        const timestamp = Number.isNaN(created.getTime()) ? new Date().toISOString() : created.toISOString();
+        const fields = [businessName, vatNumber, timestamp, totalAmount.toFixed(2), vat.toFixed(2)];
+        const bytes = fields.flatMap((field, index) => {
+          const value = new TextEncoder().encode(field);
+          return [index + 1, value.length, ...value];
+        });
+        const payload = btoa(String.fromCharCode(...bytes));
         setZatcaQrUrl(await QRCode.toDataURL(payload, { width: 180, margin: 1, errorCorrectionLevel: "M" }));
       } catch {}
     })();
-  }, [order?.orderNumber]);
+  }, [order?.orderNumber, order?.createdAt, businessName, vatNumber, totalAmount, vat]);
+
+  useEffect(() => {
+    if (!template.display.orderBarcode || !order?.orderNumber) {
+      setOrderBarcodeUrl("");
+      return;
+    }
+    try {
+      const canvas = document.createElement("canvas");
+      JsBarcode(canvas, String(order.orderNumber).replace(/\D/g, "") || String(order.orderNumber), {
+        format: "CODE128",
+        displayValue: true,
+        height: 38,
+        width: 1.5,
+        margin: 4,
+      });
+      setOrderBarcodeUrl(canvas.toDataURL("image/png"));
+    } catch {
+      setOrderBarcodeUrl("");
+    }
+  }, [order?.orderNumber, template.display.orderBarcode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -173,8 +212,11 @@ export function ReceiptInvoice({ order, variant = "button", precomputedTrackingQ
   useEffect(() => {
     // Skip staged iframe on Android — we use the no-iframe path
     if (isAndroidDevice) { setPrintReady(true); return; }
-    // Wait until both QR codes are generated before staging the iframe
-    if (!trackingQrUrl || !zatcaQrUrl || !invoiceRef.current) return;
+    const codesReady =
+      (!template.display.trackingBarcode || Boolean(trackingQrUrl)) &&
+      (!vatNumber || Boolean(zatcaQrUrl)) &&
+      (!template.display.orderBarcode || Boolean(orderBarcodeUrl));
+    if (!codesReady || !invoiceRef.current) return;
     try { printIframeRef.current?.remove(); } catch {}
     printIframeRef.current = null;
     setPrintReady(false);
@@ -221,7 +263,7 @@ export function ReceiptInvoice({ order, variant = "button", precomputedTrackingQ
 
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [trackingQrUrl, zatcaQrUrl, customQrUrls, customCodeKey, template.mode, sectionCss, surface]);
+  }, [trackingQrUrl, zatcaQrUrl, orderBarcodeUrl, customQrUrls, customCodeKey, template.mode, template.display.trackingBarcode, template.display.orderBarcode, vatNumber, sectionCss, surface]);
 
   // Cleanup the staged iframe on unmount
   useEffect(() => {
@@ -332,12 +374,12 @@ export function ReceiptInvoice({ order, variant = "button", precomputedTrackingQ
             src="/invoice-campaign-header.png"
             alt="بالغوا بالدفاع عن وطنكم"
             className="invoice-campaign-header"
-            style={{ width: "100%", height: "auto", display: "block", objectFit: "contain" }}
+            style={{ width: "100%", height: "auto", display: "block", objectFit: "contain", marginBottom: "8px" }}
           />
         )}
 
         {/* ── 1. Order number ── */}
-        <div data-invoice-section="orderNumber" style={{ textAlign: "center", fontWeight: 900, fontSize: isCampaign ? "26px" : "22px", letterSpacing: "2px", padding: isCampaign ? "2px 0 6px" : "10px 0 6px" }}>
+        <div data-invoice-section="orderNumber" style={{ textAlign: "center", fontWeight: 900, fontSize: isCampaign ? "26px" : "22px", letterSpacing: "2px", padding: isCampaign ? "8px 0" : "10px 0 6px", marginTop: isCampaign ? "4px" : 0, borderTop: isCampaign ? "1px dashed #aaa" : undefined, background: "#fff", position: "relative", clear: "both", zIndex: 1 }}>
           #{orderNum}
         </div>
 
@@ -355,10 +397,10 @@ export function ReceiptInvoice({ order, variant = "button", precomputedTrackingQ
 
         {/* ── 3. Business info ── */}
         <div style={{ textAlign: "center", fontSize: "12px", lineHeight: "1.9", marginBottom: "8px" }}>
-          <div data-invoice-section="businessDetails" style={{ fontWeight: 900, fontSize: "15px" }}>Elwa</div>
-          <div data-invoice-section="branchInfo" style={{ fontSize: "11px", color: "#444" }}>حي المروج، طريق الأمير مقرن</div>
-          <div data-invoice-section="legalInfo" style={{ direction: "ltr", fontSize: "11px", color: "#444" }}>الرقم الضريبي: 312718675800003</div>
-          <div data-invoice-section="legalInfo" style={{ fontSize: "11px", color: "#444" }}>101000004295 :رقم الفاتورة</div>
+          {template.display.businessDetails && <div data-invoice-section="businessDetails" style={{ fontWeight: 900, fontSize: "15px" }}>{businessName}</div>}
+          {template.display.branchInfo && (safeOrder.branchName || business.address) && <div data-invoice-section="branchInfo" style={{ fontSize: "11px", color: "#444" }}>{safeOrder.branchName || business.address}</div>}
+          {template.display.legalInfo && <div data-invoice-section="legalInfo" style={{ fontSize: "11px", color: "#444" }}>الرقم الضريبي: {vatNumber}</div>}
+          {template.display.legalInfo && <div data-invoice-section="legalInfo" style={{ fontSize: "11px", color: "#444" }}>السجل التجاري: {commercialRegistration}</div>}
           <div data-invoice-section="date" style={{ direction: "ltr", fontSize: "11px", color: "#444" }}>{timeStr} · {dateStr}</div>
           <div data-invoice-section="orderType" style={{ fontWeight: 700, fontSize: "13px", marginTop: "3px", background: template.mode === "custom" ? `${template.accentColor}18` : "#f0f0f0", padding: "2px 8px", display: "inline-block", borderRadius: "4px" }}>
             {orderTypeLabel}
@@ -465,7 +507,12 @@ export function ReceiptInvoice({ order, variant = "button", precomputedTrackingQ
         <div data-invoice-section="tagline" style={{ textAlign: "center", fontSize: "11px", color: "#555", paddingBottom: "8px" }}>Elwa</div>
 
         {/* ── 10. Tracking QR barcode — small on right with text beside it ── */}
-        {trackingQrUrl && (
+        {template.display.orderBarcode && orderBarcodeUrl && (
+          <div data-invoice-section="orderBarcode" style={{ textAlign: "center", padding: "6px 4px" }}>
+            <img src={orderBarcodeUrl} alt="باركود الطلب" style={{ width: "190px", height: "48px", objectFit: "contain" }} />
+          </div>
+        )}
+        {template.display.trackingBarcode && trackingQrUrl && (
           <div data-invoice-section="trackingBarcode" style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "10px", padding: "6px 4px 4px", direction: "rtl" }}>
             <img src={trackingQrUrl} alt="Tracking QR" style={{ width: "52px", height: "52px", flexShrink: 0 }} />
             <div style={{ textAlign: "right", lineHeight: "1.7" }}>
@@ -479,14 +526,14 @@ export function ReceiptInvoice({ order, variant = "button", precomputedTrackingQ
         <div style={{ borderTop: "1px dashed #ccc", margin: "8px 0" }} />
 
         {/* ── 11. ZATCA QR barcode ── */}
-        {zatcaQrUrl && (
+        {vatNumber && zatcaQrUrl && (
           <div style={{ textAlign: "center", padding: "6px 0 10px" }}>
             <div style={{ fontSize: "12px", fontWeight: 900, color: "#111", marginBottom: "6px" }}>
               الفاتورة الضريبية
             </div>
             <img src={zatcaQrUrl} alt="ZATCA QR" style={{ width: "144px", height: "144px", display: "inline-block" }} />
             <div style={{ fontSize: "10px", color: "#555", marginTop: "4px", fontFamily: "Arial, sans-serif" }}>
-              فاتورة ضريبية — الرقم الضريبي: 312718675800003
+              فاتورة ضريبية — الرقم الضريبي: {vatNumber}
             </div>
           </div>
         )}

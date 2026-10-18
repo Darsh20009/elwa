@@ -6,15 +6,26 @@ import { isAppleMobileBrowser } from "@/lib/print-capabilities";
 import type { PrintResult } from "@/lib/thermal-printer";
 import { normalizeReceiptTemplate, type ReceiptSurface, type ReceiptTemplateConfig } from "@shared/receipt-template";
 
-async function loadReceiptTemplate(): Promise<ReceiptTemplateConfig> {
+interface ReceiptBusinessSettings {
+  tradeNameAr?: string;
+  tradeNameEn?: string;
+  vatNumber?: string;
+  commercialRegistration?: string;
+  crNumber?: string;
+  address?: string;
+  currency?: string;
+  receiptTemplate?: unknown;
+}
+
+async function loadReceiptSettings(): Promise<{ template: ReceiptTemplateConfig; business: ReceiptBusinessSettings }> {
   try {
     const response = await fetch("/api/business-config", { credentials: "same-origin" });
     if (!response.ok) throw new Error(`Invoice settings request failed (${response.status})`);
-    const config = await response.json();
-    return normalizeReceiptTemplate(config?.receiptTemplate);
+    const business = await response.json() as ReceiptBusinessSettings;
+    return { template: normalizeReceiptTemplate(business.receiptTemplate), business };
   } catch (error) {
-    console.warn("[Receipt] Could not load saved invoice settings; keeping the current receipt layout.", error);
-    return normalizeReceiptTemplate(null);
+    console.warn("[Receipt] Could not load saved invoice settings; using safe receipt defaults.", error);
+    return { template: normalizeReceiptTemplate(null), business: {} };
   }
 }
 
@@ -54,16 +65,20 @@ export function prewarmZatcaQr(data: {
   total: string | number;
   date?: string;
   vatNumber?: string;
+  sellerName?: string;
 }): void {
+  const vatNumber = String(data.vatNumber || VAT_NUMBER).trim();
+  if (!vatNumber) return;
   const totalAmount = typeof data.total === 'number' ? data.total : parseFloat(String(data.total).replace(/[^0-9.-]/g, '')) || 0;
   const subtotalBeforeVat = totalAmount / (1 + VAT_RATE);
   const vat = totalAmount - subtotalBeforeVat;
   const invoiceTs = data.date ? new Date(data.date).toISOString() : new Date().toISOString();
-  const cacheKey = `zatca:${data.orderNumber}:${totalAmount.toFixed(2)}`;
+  const sellerName = data.sellerName || COMPANY_NAME;
+  const cacheKey = `zatca:${data.orderNumber}:${totalAmount.toFixed(2)}:${vatNumber}:${sellerName}`;
   if (_zatcaQrCache.has(cacheKey)) return;
   const zatcaPayload = generateZATCAQRCode({
-    sellerName: COMPANY_NAME,
-    vatNumber: data.vatNumber || VAT_NUMBER,
+    sellerName,
+    vatNumber,
     timestamp: invoiceTs,
     totalWithVat: totalAmount.toFixed(2),
     vatAmount: vat.toFixed(2),
@@ -874,7 +889,7 @@ export async function printKitchenOrder(data: KitchenOrderData): Promise<void> {
 const VAT_NUMBER = "312718675800003";
 const COMPANY_NAME = "إلوة";
 const COMPANY_NAME_EN = "Elwa";
-const COMPANY_CR = "7025559423";
+const COMPANY_CR = "4030534754";
 const COMPANY_WEBSITE = typeof window !== "undefined" ? window.location.host : "";
 const DEFAULT_BRANCH = "";
 const DEFAULT_ADDRESS = "";
@@ -955,8 +970,11 @@ async function _buildFastCustomerEscPos(
   feedLines: number,
 ): Promise<Uint8Array> {
   const { buildReceiptBitmapEscPos } = await import('./thermal-printer');
-  const template = await loadReceiptTemplate();
+  const { template, business } = await loadReceiptSettings();
   const customReceiptCodes = await makeCustomReceiptCodes(template, "customer");
+  const businessName = business.tradeNameAr || COMPANY_NAME;
+  const vatNumber = data.vatNumber || business.vatNumber || VAT_NUMBER;
+  const commercialRegistration = data.crNumber || business.commercialRegistration || business.crNumber || COMPANY_CR;
 
   const totalAmount = parseNumber(data.total);
   const subtotalBeforeVat = totalAmount / (1 + VAT_RATE);
@@ -966,13 +984,13 @@ async function _buildFastCustomerEscPos(
   const invoiceTs = data.date ? new Date(data.date).toISOString() : new Date().toISOString();
   const { date: fmtDate, time: fmtTime } = formatDate(data.date);
 
-  const zatcaPayload = generateZATCAQRCode({
-    sellerName: COMPANY_NAME,
-    vatNumber: data.vatNumber || VAT_NUMBER,
+  const zatcaPayload = vatNumber ? generateZATCAQRCode({
+    sellerName: businessName,
+    vatNumber,
     timestamp: invoiceTs,
     totalWithVat: totalAmount.toFixed(2),
     vatAmount: vatAmount.toFixed(2),
-  });
+  }) : "";
 
   // Generate both QR codes in parallel — ~50ms total
   // Use plain daily-number in tracking URL so the QR has no %23 encoding issues
@@ -987,12 +1005,13 @@ async function _buildFastCustomerEscPos(
     })(),
     (async () => {
       try {
+        if (!zatcaPayload) return "";
         return await QRCode.toDataURL(zatcaPayload, { width: 140, margin: 1, errorCorrectionLevel: 'M' });
       } catch { return ''; }
     })(),
   ]);
   let orderBarcode = '';
-  if (template.display.trackingBarcode) {
+  if (template.display.orderBarcode) {
     try {
       const barcodeCanvas = document.createElement('canvas');
       JsBarcode(barcodeCanvas, trackingNum, { format: 'CODE128', displayValue: true, height: 46, width: 2, margin: 5 });
@@ -1017,8 +1036,9 @@ async function _buildFastCustomerEscPos(
   })();
 
   return buildReceiptBitmapEscPos({
-    shopName: COMPANY_NAME,
-    vatNumber: data.vatNumber || VAT_NUMBER,
+    shopName: businessName,
+    vatNumber,
+    commercialRegistration,
     branchName: data.branchName || undefined,
     orderNumber: data.orderNumber,
     orderDate: `${fmtDate} · ${fmtTime}`,
@@ -1250,11 +1270,14 @@ function formatDate(dateStr: string): { date: string; time: string } {
 
 /** Build a visual HTML receipt for preview using the supplied Elwa invoice logo. */
 export async function buildReceiptPreviewHtml(data: TaxInvoiceData): Promise<string> {
-  const template = await loadReceiptTemplate();
+  const { template, business } = await loadReceiptSettings();
   const display = template.display;
   const customCodes = await makeCustomReceiptCodes(template, "customer");
   const hiddenSectionCss = receiptHiddenSectionCss(template);
   const campaignSelected = template.mode === "campaign";
+  const businessName = business.tradeNameAr || COMPANY_NAME;
+  const vatNumber = data.vatNumber || business.vatNumber || VAT_NUMBER;
+  const commercialRegistration = data.crNumber || business.commercialRegistration || business.crNumber || COMPANY_CR;
   const totalAmount = parseNumber(data.total);
   const subtotalBeforeVat = totalAmount / (1 + VAT_RATE);
   const vat = totalAmount - subtotalBeforeVat;
@@ -1263,7 +1286,7 @@ export async function buildReceiptPreviewHtml(data: TaxInvoiceData): Promise<str
   const orderNumDisplay = String(data.orderNumber).replace(/\D/g, '').padStart(4, '0') || data.orderNumber;
   const trackingNum = String(data.orderNumber).replace(/\D/g, '') || String(data.orderNumber);
   let orderBarcodeDataUrl = '';
-  if (template.display.trackingBarcode) {
+  if (template.display.orderBarcode) {
     try {
       const barcodeCanvas = document.createElement('canvas');
       JsBarcode(barcodeCanvas, trackingNum, { format: 'CODE128', displayValue: true, height: 42, width: 2, margin: 4 });
@@ -1284,20 +1307,28 @@ export async function buildReceiptPreviewHtml(data: TaxInvoiceData): Promise<str
     // ZATCA QR — inline SVG (zero network, zero image-load wait)
   // Uses pre-warmed cache if available (generated in background when order was created)
   const invoiceTs = data.date ? new Date(data.date).toISOString() : new Date().toISOString();
-  const zatcaPayload = generateZATCAQRCode({
-    sellerName: COMPANY_NAME,
-    vatNumber: data.vatNumber || VAT_NUMBER,
+  const zatcaPayload = vatNumber ? generateZATCAQRCode({
+    sellerName: businessName,
+    vatNumber,
     timestamp: invoiceTs,
     totalWithVat: totalAmount.toFixed(2),
     vatAmount: vat.toFixed(2),
-  });
-  const cacheKey = `zatca:${data.orderNumber}:${totalAmount.toFixed(2)}`;
-  let zatcaQrSvg = _zatcaQrCache.get(cacheKey) || '';
-  if (!zatcaQrSvg) {
+  }) : "";
+  const cacheKey = `zatca:${data.orderNumber}:${totalAmount.toFixed(2)}:${vatNumber}:${businessName}`;
+  let zatcaQrSvg = vatNumber ? (_zatcaQrCache.get(cacheKey) || '') : "";
+  if (vatNumber && !zatcaQrSvg) {
     try {
       const svgStr = await QRCode.toString(zatcaPayload, { type: 'svg', width: 100, margin: 1, errorCorrectionLevel: 'M' });
       zatcaQrSvg = svgStr.replace(/<\?xml[^?]*\?>/g, '').replace(/width="\d+"/, 'width="100"').replace(/height="\d+"/, 'height="100"');
       _zatcaQrCache.set(cacheKey, zatcaQrSvg);
+    } catch {}
+  }
+  let trackingQrSvg = "";
+  if (display.trackingBarcode) {
+    try {
+      const trackingUrl = `${window.location.origin}/track/${encodeURIComponent(trackingNum)}`;
+      const svg = await QRCode.toString(trackingUrl, { type: "svg", width: 88, margin: 1, errorCorrectionLevel: "M" });
+      trackingQrSvg = svg.replace(/<\?xml[^?]*\?>/g, "").replace(/width="\d+"/, 'width="88"').replace(/height="\d+"/, 'height="88"');
     } catch {}
   }
 
@@ -1380,7 +1411,10 @@ export async function buildReceiptPreviewHtml(data: TaxInvoiceData): Promise<str
 *{margin:0;padding:0;box-sizing:border-box;}
 body{font-family:'Cairo',Tahoma,Arial,sans-serif;direction:rtl;background:#d6d6d6;display:flex;justify-content:center;align-items:flex-start;padding:24px 10px;min-height:100vh;color:#000;}
 .paper{background:#fff;width:302px;padding:12px 12px 10px;box-shadow:0 2px 8px rgba(0,0,0,.18),0 8px 32px rgba(0,0,0,.12);}
-.campaign-art{display:block;width:calc(100% + 24px);max-width:none;height:auto;margin:-12px -12px 0;}
+ .campaign-art{display:block;width:calc(100% + 24px);max-width:none;height:auto;margin:-12px -12px 0;}
+ .campaign-order{display:block;clear:both;position:relative;z-index:1;background:#fff;font-size:18px;font-weight:900;margin:8px 0 10px;padding:8px 0;border-top:1px dashed #999;border-bottom:1px dashed #999;}
+ .business-name{font-size:14px;font-weight:900;margin:4px 0;}
+ .legal-info{font-size:11px;line-height:1.7;color:#444;}
 .label{background:#000;color:#fff;padding:2px 8px;border-radius:4px;font-size:13px;font-weight:bold;margin-bottom:8px;display:inline-block;}
 .header{text-align:center;border-bottom:1px solid #000;padding-bottom:10px;margin-bottom:10px;}
 .website{font-size:13px;font-weight:bold;color:#b45309;margin-bottom:4px;}
@@ -1420,17 +1454,19 @@ ${hiddenSectionCss}
   <div class="header">
     ${campaignSelected ? "" : `<div class="label">إيصال العميل (فاتورة ضريبية)</div>`}
     ${elwaHeaderHtml}
+    ${campaignSelected && display.orderNumber ? `<div class="campaign-order" data-invoice-section="orderNumber">رقم الطلب: #${orderNumDisplay}</div>` : ''}
+    ${!campaignSelected && display.orderNumber ? `<div class="order-line" data-invoice-section="orderNumber">رقم الطلب: #${orderNumDisplay}</div>` : ''}
+    ${display.businessDetails ? `<div class="business-name" data-invoice-section="businessDetails">${escapeReceiptText(businessName)}</div>` : ''}
+    ${display.legalInfo ? `<div class="legal-info" data-invoice-section="legalInfo"><div>الرقم الضريبي: ${escapeReceiptText(vatNumber || "غير مسجل في إعدادات المنشأة")}</div><div>السجل التجاري: ${escapeReceiptText(commercialRegistration)}</div></div>` : ''}
     ${!campaignSelected ? `<div class="website" data-invoice-section="poweredBy">${brand.website}</div>` : ''}
-    ${display.legalInfo ? `<div class="head-line" data-invoice-section="legalInfo">الرقم الضريبي: ${data.vatNumber || VAT_NUMBER}</div>` : ''}
-    ${display.orderNumber ? `<div class="order-line" data-invoice-section="orderNumber">رقم الطلب: #${orderNumDisplay}</div>` : ''}
-    ${orderBarcodeDataUrl ? `<div class="order-barcode" data-invoice-section="trackingBarcode"><img src="${orderBarcodeDataUrl}" alt="باركود الطلب"></div>` : ''}
+    ${display.orderBarcode && orderBarcodeDataUrl ? `<div class="order-barcode" data-invoice-section="orderBarcode"><img src="${orderBarcodeDataUrl}" alt="باركود الطلب"></div>` : ''}
     ${display.date ? `<div class="head-line" data-invoice-section="date" style="direction:ltr;">${fmtDate} ${fmtTime}</div>` : ''}
   </div>
 
   <!-- ══ بيانات الطلب ══ -->
   <div class="info-block">
     ${display.orderType ? `<div data-invoice-section="orderType">${orderTypeLabel ? `نوع الطلب: ${orderTypeLabel}` : ''}</div>` : ''}
-    ${display.branchInfo && data.branchName ? `<div data-invoice-section="branchInfo">${escapeReceiptText(data.branchName)}</div>` : ''}
+  ${display.branchInfo && (data.branchName || business.address) ? `<div data-invoice-section="branchInfo">${escapeReceiptText(data.branchName || business.address)}</div>` : ''}
     ${data.tableNumber ? `<div data-invoice-section="orderType">طاولة: ${data.tableNumber}</div>` : ''}
     ${display.cashier && data.employeeName ? `<div data-invoice-section="cashier">الموظف: ${data.employeeName}</div>` : ''}
   </div>
@@ -1476,6 +1512,7 @@ ${hiddenSectionCss}
   ${template.display.notes && (data as any).notes ? `<div data-invoice-section="notes" class="notes-box"><strong>ملاحظات:</strong> ${escapeReceiptText((data as any).notes)}</div>` : ''}
 
   <!-- ══ كود QR ZATCA ══ -->
+  ${trackingQrSvg ? `<div class="qr-container" data-invoice-section="trackingBarcode">${trackingQrSvg}<div style="font-size:10px;margin-top:4px;">امسح لمتابعة حالة الطلب</div></div>` : ''}
   ${zatcaQrSvg ? `<div class="qr-container">${zatcaQrSvg}<div style="font-size:10px;margin-top:4px;">امسح للتحقق من الفاتورة</div></div>` : ''}
   ${customCodesHtml}
 
@@ -1747,6 +1784,11 @@ export async function printTaxInvoice(data: TaxInvoiceData, config: PrintConfig 
 }
 
 export async function printA4TaxInvoice(data: TaxInvoiceData): Promise<void> {
+  const { template, business } = await loadReceiptSettings();
+  const businessName = business.tradeNameAr || COMPANY_NAME;
+  const businessNameEn = business.tradeNameEn || COMPANY_NAME_EN;
+  const vatNumber = data.vatNumber || business.vatNumber || VAT_NUMBER;
+  const crNumber = data.crNumber || business.commercialRegistration || business.crNumber || COMPANY_CR;
   const escapeHtml = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, character => ({
     '&': '&amp;',
     '<': '&lt;',
@@ -1760,31 +1802,33 @@ export async function printA4TaxInvoice(data: TaxInvoiceData): Promise<void> {
   const invoiceDate = data.date ? new Date(data.date) : new Date();
   const invoiceTimestamp = Number.isNaN(invoiceDate.getTime()) ? new Date().toISOString() : invoiceDate.toISOString();
   const { date: formattedDate, time: formattedTime } = formatDate(data.date);
-  const vatNumber = data.vatNumber || VAT_NUMBER;
-  const crNumber = data.crNumber || COMPANY_CR;
   const orderCode = String(data.orderNumber).replace(/\D/g, '') || String(data.orderNumber);
   let barcodeDataUrl = '';
   let zatcaQrDataUrl = '';
 
-  try {
-    const canvas = document.createElement('canvas');
-    JsBarcode(canvas, orderCode, { format: 'CODE128', displayValue: true, height: 48, width: 2, margin: 4 });
-    barcodeDataUrl = canvas.toDataURL('image/png');
-  } catch (error) {
-    console.error('[Print] Could not generate order barcode:', error);
+  if (template.display.orderBarcode) {
+    try {
+      const canvas = document.createElement('canvas');
+      JsBarcode(canvas, orderCode, { format: 'CODE128', displayValue: true, height: 48, width: 2, margin: 4 });
+      barcodeDataUrl = canvas.toDataURL('image/png');
+    } catch (error) {
+      console.error('[Print] Could not generate order barcode:', error);
+    }
   }
 
-  try {
-    const payload = generateZATCAQRCode({
-      sellerName: COMPANY_NAME,
-      vatNumber,
-      timestamp: invoiceTimestamp,
-      totalWithVat: totalAmount.toFixed(2),
-      vatAmount: vatAmount.toFixed(2),
-    });
-    zatcaQrDataUrl = await QRCode.toDataURL(payload, { width: 150, margin: 1, errorCorrectionLevel: 'M' });
-  } catch (error) {
-    console.error('[Print] Could not generate ZATCA QR:', error);
+  if (vatNumber) {
+    try {
+      const payload = generateZATCAQRCode({
+        sellerName: businessName,
+        vatNumber,
+        timestamp: invoiceTimestamp,
+        totalWithVat: totalAmount.toFixed(2),
+        vatAmount: vatAmount.toFixed(2),
+      });
+      zatcaQrDataUrl = await QRCode.toDataURL(payload, { width: 150, margin: 1, errorCorrectionLevel: 'M' });
+    } catch (error) {
+      console.error('[Print] Could not generate ZATCA QR:', error);
+    }
   }
 
   const itemRows = data.items.map(item => {
@@ -1809,14 +1853,17 @@ export async function printA4TaxInvoice(data: TaxInvoiceData): Promise<void> {
   const invoiceNumber = escapeHtml(data.invoiceNumber || data.orderNumber);
   const customerName = escapeHtml(data.customerName || 'عميل نقدي');
   const customerPhone = escapeHtml(data.customerPhone);
-  const branchName = escapeHtml(data.branchName || COMPANY_NAME);
-  const branchAddress = escapeHtml(data.branchAddress || '');
+  const branchName = escapeHtml(data.branchName || businessName);
+  const branchAddress = escapeHtml(data.branchAddress || business.address || '');
   const employeeName = escapeHtml(data.employeeName);
   const paymentMethod = escapeHtml(data.paymentMethod);
   const tableNumber = escapeHtml(data.tableNumber || '');
-  const barcodeBlock = barcodeDataUrl
-    ? `<img class="barcode" src="${barcodeDataUrl}" alt="Order barcode">`
-    : `<strong>${escapeHtml(data.orderNumber)}</strong>`;
+  const barcodeSection = template.display.orderBarcode && barcodeDataUrl
+    ? `<section class="barcode-panel" data-invoice-section="orderBarcode">
+        <span>باركود الطلب</span>
+        <img class="barcode" src="${barcodeDataUrl}" alt="باركود الطلب">
+      </section>`
+    : '';
   const qrBlock = zatcaQrDataUrl
     ? `<img class="zatca-qr" src="${zatcaQrDataUrl}" alt="ZATCA QR code"><small>رمز التحقق الضريبي</small>`
     : '';
@@ -1871,15 +1918,15 @@ export async function printA4TaxInvoice(data: TaxInvoiceData): Promise<void> {
   <main class="invoice">
     <header class="header">
       <div class="brand">
-        <img src="/elwa-invoice-logo.png?v=4" alt="إلوة">
+        ${template.display.logo ? `<img src="/elwa-invoice-logo.png?v=4" alt="إلوة">` : ''}
         <div>
-          <div class="brand-name">${escapeHtml(COMPANY_NAME)} · ${escapeHtml(COMPANY_NAME_EN)}</div>
-          <div class="brand-info">الرقم الضريبي: ${escapeHtml(vatNumber)}<br>السجل التجاري: ${escapeHtml(crNumber)}</div>
+          ${template.display.businessDetails ? `<div class="brand-name" data-invoice-section="businessDetails">${escapeHtml(businessName)} · ${escapeHtml(businessNameEn)}</div>` : ''}
+          ${template.display.legalInfo ? `<div class="brand-info" data-invoice-section="legalInfo">الرقم الضريبي: ${escapeHtml(vatNumber || 'غير مسجل في إعدادات المنشأة')}<br>السجل التجاري: ${escapeHtml(crNumber)}</div>` : ''}
         </div>
       </div>
       <div class="invoice-title">
         <h1>فاتورة ضريبية</h1>
-        <p>رقم الفاتورة: ${invoiceNumber}</p>
+        ${template.display.orderNumber ? `<p data-invoice-section="orderNumber">رقم الفاتورة: ${invoiceNumber}</p>` : ''}
         <p>تاريخ الإصدار: ${escapeHtml(formattedDate)} ${escapeHtml(formattedTime)}</p>
       </div>
     </header>
@@ -1894,17 +1941,14 @@ export async function printA4TaxInvoice(data: TaxInvoiceData): Promise<void> {
       </div>
       <div class="panel">
         <h2>بيانات العملية</h2>
-        <div class="detail-line"><span>رقم الطلب</span><span>${escapeHtml(data.orderNumber)}</span></div>
+        ${template.display.orderNumber ? `<div class="detail-line" data-invoice-section="orderNumber"><span>رقم الطلب</span><span>${escapeHtml(data.orderNumber)}</span></div>` : ''}
         <div class="detail-line"><span>طريقة الدفع</span><span>${paymentMethod}</span></div>
         ${employeeName ? `<div class="detail-line"><span>الموظف</span><span>${employeeName}</span></div>` : ''}
         ${tableNumber ? `<div class="detail-line"><span>الطاولة</span><span>${tableNumber}</span></div>` : ''}
       </div>
     </section>
 
-    <section class="barcode-panel">
-      <span>باركود الطلب</span>
-      ${barcodeBlock}
-    </section>
+    ${barcodeSection}
 
     <table class="items">
       <thead><tr><th>الصنف</th><th class="numeric">الكمية</th><th class="numeric">سعر الوحدة</th><th class="numeric">الإجمالي</th></tr></thead>
@@ -1934,8 +1978,11 @@ export async function printA4TaxInvoice(data: TaxInvoiceData): Promise<void> {
 }
 
 export async function printCustomerPickupReceipt(data: TaxInvoiceData & { deliveryType?: string; deliveryTypeAr?: string }): Promise<void> {
-  const template = await loadReceiptTemplate();
+  const { template, business } = await loadReceiptSettings();
   const customCodes = await makeCustomReceiptCodes(template, "customer");
+  const businessName = business.tradeNameAr || COMPANY_NAME;
+  const vatNumber = data.vatNumber || business.vatNumber || VAT_NUMBER;
+  const commercialRegistration = data.crNumber || business.commercialRegistration || business.crNumber || COMPANY_CR;
   const _trackNum = String(data.orderNumber).replace(/\D/g, '') || String(data.orderNumber);
   const orderTrackingUrl = `${window.location.origin}/track/${_trackNum}`;
   
@@ -1949,7 +1996,7 @@ export async function printCustomerPickupReceipt(data: TaxInvoiceData & { delive
     }
   }
   let orderBarcodeDataUrl = "";
-  if (template.display.trackingBarcode) {
+  if (template.display.orderBarcode) {
     try {
       const barcodeCanvas = document.createElement('canvas');
       JsBarcode(barcodeCanvas, _trackNum, { format: 'CODE128', displayValue: true, height: 46, width: 2, margin: 5 });
@@ -2000,8 +2047,9 @@ export async function printCustomerPickupReceipt(data: TaxInvoiceData & { delive
     .qr-container svg { width: 120px; height: 120px; }
     .qr-note { font-size: 11px; color: #666; margin-top: 8px; }
     .footer { text-align: center; padding-top: 16px; font-size: 12px; color: #666; }
-    .campaign-art { display:block; width:calc(100% + 32px); max-width:none; height:auto; margin:-16px -16px 0; }
-    .campaign-order { margin:0 0 16px!important; }
+    .campaign-art { display:block; width:calc(100% + 32px); max-width:none; height:auto; margin:-16px -16px 8px; }
+    .campaign-order { display:block; clear:both; position:relative; z-index:1; width:100%; background:#fff; margin:4px 0 14px!important; padding:8px 0; border-top:1px dashed #999; border-bottom:1px dashed #999; }
+    .business-legal { font-size:12px; line-height:1.8; color:#444; }
     ${receiptHiddenSectionCss(template)}
     @media print { body { margin: 0; } .no-print { display: none !important; } }
   </style>
@@ -2011,13 +2059,17 @@ export async function printCustomerPickupReceipt(data: TaxInvoiceData & { delive
     <div class="header">
       ${template.mode === "campaign"
         ? `<img class="campaign-art" src="/invoice-campaign-header.png" alt="بالغوا بالدفاع عن وطنكم">`
-        : `${template.display.logo ? `<img data-invoice-section="logo" class="brand-logo" src="/elwa-invoice-logo.png?v=4" alt="إلوة">` : ""}
-           ${template.display.businessDetails ? `<h1 data-invoice-section="businessDetails" class="company-name">${COMPANY_NAME}</h1>` : ""}
-           <p style="color: #666; font-size: 14px;">إيصال الاستلام</p>`}
+        : `${template.display.logo ? `<img data-invoice-section="logo" class="brand-logo" src="/elwa-invoice-logo.png?v=4" alt="إلوة">` : ""}`}
       ${template.display.orderNumber ? `<div class="order-badge ${template.mode === "campaign" ? "campaign-order" : ""}" data-invoice-section="orderNumber">
         <div class="order-number">${fmtOrderNum(data.orderNumber)}</div>
       </div>` : ''}
-      ${orderBarcodeDataUrl ? `<img data-invoice-section="trackingBarcode" class="order-barcode" src="${orderBarcodeDataUrl}" alt="باركود الطلب ${fmtOrderNum(data.orderNumber)}">` : ''}
+      ${template.display.businessDetails ? `<h1 data-invoice-section="businessDetails" class="company-name">${escapeReceiptText(businessName)}</h1>` : ''}
+      ${template.display.legalInfo ? `<div class="business-legal" data-invoice-section="legalInfo">
+        <div>الرقم الضريبي: ${escapeReceiptText(vatNumber || 'غير مسجل في إعدادات المنشأة')}</div>
+        <div>السجل التجاري: ${escapeReceiptText(commercialRegistration)}</div>
+      </div>` : ''}
+      ${template.mode !== "campaign" ? `<p style="color: #666; font-size: 14px;">إيصال الاستلام</p>` : ''}
+      ${template.display.orderBarcode && orderBarcodeDataUrl ? `<img data-invoice-section="orderBarcode" class="order-barcode" src="${orderBarcodeDataUrl}" alt="باركود الطلب ${fmtOrderNum(data.orderNumber)}">` : ''}
       <div data-invoice-section="orderType" class="order-type">${deliveryTypeAr}</div>
     </div>
 

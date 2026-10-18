@@ -795,6 +795,7 @@ export async function dataUrlToEscPosRaster(
 export interface ReceiptBitmapOpts {
   shopName: string;
   vatNumber: string;
+  commercialRegistration?: string;
   branchName?: string;
   tagline?: string;
   orderNumber: string;
@@ -893,6 +894,7 @@ export async function buildReceiptCanvas(opts: ReceiptBitmapOpts): Promise<HTMLC
   const campaignSelected = template.mode === 'campaign' && campaignImg?.naturalWidth;
   if (campaignSelected) {
     addImg(campaignImg, DW, 'width');
+    addGap(Math.round(FS * 0.7));
     if (display.orderNumber) addText(`#${orderNumFmt}`, 'center', Math.round(FS * 2.4), true);
     addGap(Math.round(FS * 0.4));
   } else {
@@ -900,14 +902,26 @@ export async function buildReceiptCanvas(opts: ReceiptBitmapOpts): Promise<HTMLC
     addGap(Math.round(FS * 3.2));
     if (display.logo) addImg(logoImg, Math.round(DW * 0.35));
     addGap(8);
+    if (display.businessDetails) addText(opts.shopName, 'center', Math.round(FS * 1.1), true);
     if (display.branchInfo && opts.branchName) addText(opts.branchName, 'center', Math.round(FS * 0.88));
     if (display.tagline && opts.tagline) addText(opts.tagline, 'center', Math.round(FS * 0.82), false, '#444');
-    if (display.legalInfo) addText(`VAT: ${opts.vatNumber}`, 'center', Math.round(FS * 0.78), false, '#555');
+    if (display.legalInfo) {
+      addText(`الرقم الضريبي: ${opts.vatNumber || 'غير مسجل'}`, 'center', Math.round(FS * 0.78), false, '#555');
+      addText(`السجل التجاري: ${opts.commercialRegistration || '4030534754'}`, 'center', Math.round(FS * 0.78), false, '#555');
+    }
     addLine(true);
     addText('فاتورة ضريبية مبسطة', 'center', Math.round(FS * 1.05), true);
     addGap(Math.round(FS * 0.8));
     if (display.orderNumber) addText(`#${orderNumFmt}`, 'center', Math.round(FS * 2.4), true);
     addGap(Math.round(FS * 0.4));
+  }
+  if (campaignSelected) {
+    if (display.businessDetails) addText(opts.shopName, 'center', Math.round(FS * 1.05), true);
+    if (display.legalInfo) {
+      addText(`الرقم الضريبي: ${opts.vatNumber || 'غير مسجل'}`, 'center', Math.round(FS * 0.78), false, '#555');
+      addText(`السجل التجاري: ${opts.commercialRegistration || '4030534754'}`, 'center', Math.round(FS * 0.78), false, '#555');
+    }
+    if (display.branchInfo && opts.branchName) addText(opts.branchName, 'center', Math.round(FS * 0.88));
   }
 
   // Info block — no separator lines
@@ -969,7 +983,7 @@ export async function buildReceiptCanvas(opts: ReceiptBitmapOpts): Promise<HTMLC
     addRow('  الباقي:', `${Math.max(0, cr - opts.total).toFixed(2)} ر.س`, Math.round(FS * 0.82), false, false, '#16a34a');
   }
 
-  if (display.trackingBarcode && barcodeImg && barcodeImg.naturalWidth > 0) {
+  if (display.orderBarcode && barcodeImg && barcodeImg.naturalWidth > 0) {
     addGap(8);
     addImg(barcodeImg, Math.round(DW * 0.52));
     addGap(3);
