@@ -5,7 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
-import { Save, Shield, Bell, Palette, Database, Plus, Store, Utensils, Coffee, AlertTriangle, Layout, ShieldAlert, Users, Loader2, Trash2, FolderTree, Flame, Snowflake, Star, Cake, Sparkles, GripVertical, Pencil, CreditCard, Wifi, WifiOff, Eye, EyeOff, ExternalLink, CheckCircle, XCircle, Banknote, Smartphone, Gift, Percent, Tag, Ticket, Download, Globe, Package, ChevronDown, ChevronUp, MonitorSmartphone, MapPin, Navigation, FlaskConical, ShoppingBag, Truck, Timer, Car, Clock, Zap, Volume2, Settings } from 'lucide-react';
+import { Save, Shield, Bell, Palette, Database, Plus, Store, Utensils, Coffee, AlertTriangle, Layout, ShieldAlert, Users, Loader2, Trash2, FolderTree, Flame, Snowflake, Star, Cake, Sparkles, GripVertical, Pencil, CreditCard, Wifi, WifiOff, Eye, EyeOff, ExternalLink, CheckCircle, XCircle, Banknote, Smartphone, Gift, Percent, Tag, Ticket, Download, Globe, Package, ChevronDown, ChevronUp, MonitorSmartphone, MapPin, Navigation, FlaskConical, ShoppingBag, Truck, Timer, Car, Clock, Zap, Volume2, Settings, FileText } from 'lucide-react';
 import { SoundSettingsPanel } from "@/components/sound-settings-panel";
 import InvoiceTemplateSettings from "@/components/invoice-template-settings";
 import {
@@ -846,6 +846,7 @@ export default function AdminSettings() {
     { key: 'operations', labelAr: 'التشغيل',    labelEn: 'Operations', icon: Truck },
     { key: 'menu',       labelAr: 'القائمة',    labelEn: 'Menu',       icon: Utensils },
     { key: 'payments',   labelAr: 'الدفع',      labelEn: 'Payments',   icon: CreditCard },
+    { key: 'invoices',   labelAr: 'الفواتير',   labelEn: 'Invoices',   icon: FileText },
     { key: 'loyalty',    labelAr: 'الولاء',     labelEn: 'Loyalty',    icon: Gift },
     { key: 'sounds',     labelAr: 'الأصوات',    labelEn: 'Sounds',     icon: Volume2 },
   ];
@@ -1515,6 +1516,13 @@ export default function AdminSettings() {
           </CardContent>
         </Card>
       </div>
+      )}
+
+      {/* ── Tab: Invoices ── */}
+      {activeTab === 'invoices' && (
+        <div className="max-w-5xl mx-auto">
+          <InvoiceTemplateSettings />
+        </div>
       )}
 
       {/* ── Tab: Operations ── */}
@@ -2807,8 +2815,6 @@ export default function AdminSettings() {
             </div>
           </CardContent>
         </Card>
-
-        <InvoiceTemplateSettings />
 
         {/* User Management Quick Links */}
         <Card className="hover-elevate border-green-100 dark:border-green-900/30">
