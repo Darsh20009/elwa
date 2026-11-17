@@ -5,6 +5,7 @@
 - [Customer phone format](customer-phone.md) — Keep Saudi customer phones in legacy local form; store other countries as E.164 for matching.
 - [Menu hero photos](menu-hero-photos.md) — Bundled hero banner files are 1×1 placeholders; display only candidate images that load at usable dimensions.
 - [Refund handling](refund-handling.md) — Restock only refunded lines with exact saved ingredient costs; keep legacy orders non-restockable and uncertain image matches unassigned.
+- [Financial report branch scope](financial-report-branch-scope.md) — Never attribute unassigned opening balances or journal lines to a selected branch.
 - [Contact sheets](contact-sheets.md) — ImageMagick `montage` invokes an unavailable default font here; build unlabeled grids with `+append` and `-append`.
 - [Canonical site domain](canonical-domain.md) — https://elwa.site is live and verified; keep canonical URLs, sitemap and Open Graph on this host.
 - [Render build compatibility](render-build-compatibility.md) — Normalize Replit-only npm lock URLs in Render's build copy and keep Replit development plugins out of production builds.
