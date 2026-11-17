@@ -1,10 +1,27 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { Binary } from "bson";
 import {
   listProductImageAssets,
+  normalizeStoredImageBuffer,
   ProductImageUploadError,
   saveProductImageAsset,
 } from "../server/product-image-library";
+
+test("converts MongoDB Binary image data into a response Buffer", () => {
+  const expected = Buffer.from([0, 1, 2, 127, 128, 255]);
+  const stored = new Binary(expected);
+
+  assert.deepEqual(normalizeStoredImageBuffer(stored), expected);
+});
+
+test("preserves Buffer and Uint8Array image values", () => {
+  const expected = Buffer.from([10, 20, 30]);
+
+  assert.equal(normalizeStoredImageBuffer(expected), expected);
+  assert.deepEqual(normalizeStoredImageBuffer(new Uint8Array(expected)), expected);
+  assert.equal(normalizeStoredImageBuffer("not image data"), null);
+});
 
 test("stores an optimized image buffer in MongoDB and returns its image route", async () => {
   const inputBuffer = Buffer.from("original");

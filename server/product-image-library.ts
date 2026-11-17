@@ -28,6 +28,42 @@ export interface ProductImageLibraryEntry {
   uploadedAt: string;
 }
 
+export function normalizeStoredImageBuffer(value: unknown): Buffer | null {
+  if (Buffer.isBuffer(value)) {
+    return value;
+  }
+  if (value instanceof Uint8Array) {
+    return Buffer.from(value);
+  }
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const binary = value as {
+    _bsontype?: string;
+    value?: (asRaw?: boolean) => unknown;
+    buffer?: Uint8Array;
+    position?: number;
+  };
+
+  if (binary._bsontype === "Binary" && typeof binary.value === "function") {
+    const bytes = binary.value(true);
+    if (bytes instanceof Uint8Array) {
+      return Buffer.from(bytes);
+    }
+  }
+
+  if (binary.buffer instanceof Uint8Array) {
+    const length =
+      typeof binary.position === "number"
+        ? Math.min(Math.max(binary.position, 0), binary.buffer.length)
+        : binary.buffer.length;
+    return Buffer.from(binary.buffer.subarray(0, length));
+  }
+
+  return null;
+}
+
 export class ProductImageUploadError extends Error {
   constructor(message: string) {
     super(message);

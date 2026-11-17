@@ -10,7 +10,12 @@ import { createPosInvoicePdf, createPosInvoiceUrl, verifyPosInvoiceToken } from 
 import { foodicsMonthlySales, foodicsMonthlySalesInfo } from "@shared/foodics-monthly-sales";
 import { normalizeCustomerPhone } from "@shared/customer-phone";
 import { receiptTemplateSchema } from "@shared/receipt-template";
-import { listProductImageAssets, ProductImageUploadError, saveProductImageAsset } from "./product-image-library";
+import {
+  listProductImageAssets,
+  normalizeStoredImageBuffer,
+  ProductImageUploadError,
+  saveProductImageAsset,
+} from "./product-image-library";
 
 // Must match SESSION_VERSION in server/index.ts — bump both together to force re-login on all devices
 const SESSION_VERSION = '2026-07-06-v1';
@@ -15155,20 +15160,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const asset = await ProductImageAssetModel.findOne({ id: req.params.id })
         .select("+imageData")
         .lean() as unknown as {
-          imageData?: Buffer;
+          imageData?: unknown;
           sizeBytes?: number;
         } | null;
-      if (!asset?.imageData) {
+      if (!asset) {
         return res.status(404).json({ error: "الصورة غير موجودة" });
+      }
+      const imageBuffer = normalizeStoredImageBuffer(asset.imageData);
+      if (!imageBuffer?.length) {
+        console.error("Stored product image has no readable binary payload:", req.params.id);
+        return res.status(500).json({ error: "تعذر قراءة بيانات الصورة" });
       }
 
       res.set({
         "Content-Type": "image/webp",
-        "Content-Length": String(asset.sizeBytes || asset.imageData.length),
+        "Content-Length": String(asset.sizeBytes || imageBuffer.length),
         "Cache-Control": "public, max-age=31536000, immutable",
         "X-Content-Type-Options": "nosniff",
       });
-      return res.end(asset.imageData);
+      return res.end(imageBuffer);
     } catch (error) {
       console.error("Error serving product image from MongoDB:", error);
       return res.status(500).json({ error: "تعذر تحميل الصورة" });
