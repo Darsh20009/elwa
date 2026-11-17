@@ -15080,68 +15080,122 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Upload drink image
   app.post("/api/upload-drink-image", requireAuth, requireManager, wrapMulter(drinkUpload.single('image')), async (req: AuthRequest, res) => {
+    if (!req.file) {
+      return res.status(400).json({ error: "No image file uploaded" });
+    }
+
+    const tenantId = req.employee?.tenantId || process.env.TENANT_ID;
+    if (!tenantId) {
+      try { fs.unlinkSync(req.file.path); } catch {}
+      return res.status(500).json({ error: "Tenant is not configured" });
+    }
+
     try {
-      if (!req.file) {
-        return res.status(400).json({ error: "No image file uploaded" });
+      const fsModule = await import("fs");
+      const inputBuffer = fsModule.readFileSync(req.file.path);
+      const sharpModule = await import("sharp");
+      const sharp = (sharpModule as any).default || sharpModule;
+
+      let optimizedBuffer: Buffer;
+      try {
+        optimizedBuffer = await sharp(inputBuffer)
+          .rotate()
+          .resize({ width: 1600, height: 1600, fit: "inside", withoutEnlargement: true })
+          .webp({ quality: 82, effort: 4 })
+          .toBuffer();
+      } catch {
+        return res.status(400).json({ error: "ملف الصورة تالف أو غير مدعوم" });
       }
 
+      const { ProductImageAssetModel } = await import("@shared/schema");
       const { ObjectStorageService } = await import("./qirox_studio_integrations/object_storage");
       const storageService = new ObjectStorageService();
+      const uploadURL = await storageService.getObjectEntityUploadURL();
+      const objectPath = storageService.normalizeObjectEntityPath(uploadURL);
+      const uploadResponse = await fetch(uploadURL, {
+        method: "PUT",
+        body: optimizedBuffer as unknown as BodyInit,
+        headers: {
+          "Content-Type": "image/webp",
+          "Content-Length": String(optimizedBuffer.length),
+        },
+      });
 
-      try {
-        const uploadURL = await storageService.getObjectEntityUploadURL();
-        const objectPath = storageService.normalizeObjectEntityPath(uploadURL);
-
-        const fsModule = await import('fs');
-        const fileBuffer = fsModule.readFileSync(req.file.path);
-
-        const uploadResponse = await fetch(uploadURL, {
-          method: 'PUT',
-          body: fileBuffer as unknown as BodyInit,
-          headers: {
-            'Content-Type': req.file.mimetype || 'image/png',
-          },
-        });
-
-        if (!uploadResponse.ok) {
-          throw new Error('Failed to upload to object storage');
-        }
-
-        fsModule.unlinkSync(req.file.path);
-        res.json({ url: objectPath });
-      } catch (storageError) {
-        try { fs.unlinkSync(req.file.path); } catch {}
-        if (storageError instanceof ObjectStorageNotConfiguredError) {
-          return res.status(503).json({ error: "Object storage is not configured" });
-        }
+      if (!uploadResponse.ok) {
         return res.status(502).json({ error: "Object storage upload failed" });
       }
+
+      await storageService.trySetObjectEntityAclPolicy(objectPath, {
+        owner: String(tenantId),
+        visibility: "public",
+      });
+
+      const asset = await ProductImageAssetModel.create({
+        id: objectPath,
+        tenantId: String(tenantId),
+        fileName: path.basename(req.file.originalname || "product-image"),
+        url: objectPath,
+        contentType: "image/webp",
+        sizeBytes: optimizedBuffer.length,
+        uploadedBy: req.employee?.id,
+        uploadedAt: new Date(),
+      });
+
+      res.json({
+        id: asset.id,
+        filename: asset.fileName,
+        url: asset.url,
+        uploadedAt: asset.uploadedAt,
+      });
     } catch (error) {
+      if (error instanceof ObjectStorageNotConfiguredError) {
+        return res.status(503).json({ error: "Object storage is not configured" });
+      }
       console.error("Error uploading drink image:", error);
       res.status(500).json({ error: "Failed to upload image" });
+    } finally {
+      try { fs.unlinkSync(req.file.path); } catch {}
     }
   });
 
   // List all uploaded drink images
   app.get("/api/drink-images", requireAuth, async (req: AuthRequest, res) => {
     try {
-      const drinksDir = path.resolve(__dirname, '..', 'attached_assets', 'drinks');
-      if (!fs.existsSync(drinksDir)) {
-        return res.json([]);
+      const { ProductImageAssetModel } = await import("@shared/schema");
+      const tenantId = req.employee?.tenantId || process.env.TENANT_ID;
+      if (!tenantId) {
+        return res.status(500).json({ error: "Tenant is not configured" });
       }
-      const files = fs.readdirSync(drinksDir)
-        .filter(f => /\.(png|jpg|jpeg|webp)$/i.test(f))
-        .sort((a, b) => {
-          const statA = fs.statSync(path.join(drinksDir, a));
-          const statB = fs.statSync(path.join(drinksDir, b));
-          return statB.mtimeMs - statA.mtimeMs;
-        })
-        .map(f => ({
-          filename: f,
-          url: `/attached_assets/drinks/${f}`,
-          uploadedAt: fs.statSync(path.join(drinksDir, f)).mtime.toISOString()
-        }));
-      res.json(files);
+
+      const storedImages = await ProductImageAssetModel.find({ tenantId: String(tenantId) })
+        .sort({ uploadedAt: -1 })
+        .lean();
+      const result = storedImages.map((image: any) => ({
+        id: image.id,
+        filename: image.fileName,
+        url: image.url,
+        uploadedAt: new Date(image.uploadedAt).toISOString(),
+      }));
+
+      const drinksDir = path.resolve(__dirname, '..', 'attached_assets', 'drinks');
+      if (fs.existsSync(drinksDir)) {
+        const legacyImages = fs.readdirSync(drinksDir)
+          .filter(f => /\.(png|jpg|jpeg|webp)$/i.test(f))
+          .map((filename) => {
+            const uploadedAt = fs.statSync(path.join(drinksDir, filename)).mtime;
+            return {
+              id: `legacy:${filename}`,
+              filename,
+              url: `/attached_assets/drinks/${filename}`,
+              uploadedAt: uploadedAt.toISOString(),
+            };
+          });
+        result.push(...legacyImages);
+      }
+
+      result.sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime());
+      res.setHeader("Cache-Control", "private, no-store");
+      res.json(result);
     } catch (error) {
       res.status(500).json({ error: "Failed to list drink images" });
     }

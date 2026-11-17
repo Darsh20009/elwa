@@ -901,6 +901,29 @@ export default function PosSystem() {
     return `${item.category || 'none'}::${nameBase}`;
   }, []);
 
+  const getMenuCategoryForProduct = useCallback((product: any) => {
+    const categoryId = String(product.categoryId || '').trim();
+    const categoryValue = String(product.category || '').trim();
+    return menuCategories.find((category: any) =>
+      String(category.id) === categoryId ||
+      String(category.id) === categoryValue ||
+      String(category.nameAr || '').trim() === categoryValue ||
+      String(category.nameEn || '').trim() === categoryValue
+    );
+  }, [menuCategories]);
+
+  const getProductCategoryKey = useCallback((product: any) => {
+    const category = getMenuCategoryForProduct(product);
+    return String(category?.id || product.categoryId || product.category || '').trim();
+  }, [getMenuCategoryForProduct]);
+
+  const getProductDepartment = useCallback((product: any) => {
+    return product.department ||
+      product.menuType ||
+      getMenuCategoryForProduct(product)?.department ||
+      'drinks';
+  }, [getMenuCategoryForProduct]);
+
   const groupedItemsMap = useMemo(() => {
     if (!productsData) return {} as Record<string, CoffeeItem[]>;
     return productsData.reduce((acc: Record<string, CoffeeItem[]>, item) => {
@@ -922,8 +945,8 @@ export default function PosSystem() {
     return Object.values(groupedItemsMap)
       .filter(group => {
         const rep = group[0] as any;
-        const matchesDept = selectedDepartment === 'all' || (rep.department || 'drinks') === selectedDepartment;
-        const matchesCategory = selectedCategory === "all" || rep.category === selectedCategory;
+        const matchesDept = selectedDepartment === 'all' || getProductDepartment(rep) === selectedDepartment;
+        const matchesCategory = selectedCategory === "all" || getProductCategoryKey(rep) === selectedCategory;
         if (!matchesDept || !matchesCategory) return false;
         if (!q) return true;
         return group.some(item => {
@@ -939,17 +962,17 @@ export default function PosSystem() {
           isBestSeller: (item.salesCount || 0) >= bsThreshold && bsThreshold > 0,
         };
       });
-  }, [productsData, selectedCategory, selectedDepartment, searchQuery, groupedItemsMap]);
+  }, [productsData, selectedCategory, selectedDepartment, searchQuery, groupedItemsMap, getProductDepartment, getProductCategoryKey]);
 
   // Departments that have at least one product
   const availableDepartments = useMemo(() => {
     if (!productsData) return [];
-    const depts = new Set(productsData.map((p: any) => p.department || 'drinks'));
+    const depts = new Set(productsData.map((p: any) => getProductDepartment(p)));
     const result: { id: 'drinks' | 'food'; nameAr: string; nameEn: string }[] = [];
     if (depts.has('drinks')) result.push({ id: 'drinks', nameAr: 'مشروبات', nameEn: 'Drinks' });
     if (depts.has('food'))   result.push({ id: 'food',   nameAr: 'أكل',      nameEn: 'Food'   });
     return result;
-  }, [productsData]);
+  }, [productsData, getProductDepartment]);
 
   // Arabic display names for raw category keys (fallback when no MenuCategory records exist)
   const CATEGORY_DISPLAY: Record<string, { ar: string; en: string }> = {
@@ -974,32 +997,40 @@ export default function PosSystem() {
   const visibleCategories = useMemo(() => {
     const filteredProducts = selectedDepartment === 'all'
       ? productsData || []
-      : (productsData || []).filter((p: any) => (p.department || 'drinks') === selectedDepartment);
-    const itemCategorySet = new Set(filteredProducts.map((p: any) => p.category).filter(Boolean));
+      : (productsData || []).filter((p: any) => getProductDepartment(p) === selectedDepartment);
 
-    // ① Try to match against MenuCategory records (when they exist)
-    const fromMenuCats = menuCategories
-      .filter((c: any) => itemCategorySet.has(c.id))
-      .map((c: any) => ({
-        id: c.id,
-        name: i18n.language === 'ar' ? (c.nameAr || c.nameEn || c.id) : (c.nameEn || c.nameAr || c.id),
-        icon: Tag,
-      }));
+    // Products edited through menu management may store the category name in
+    // `category` and its stable ID in `categoryId`; resolve both formats.
+    const categoriesById = new Map<string, { id: string; name: string; icon: typeof Tag }>();
+    filteredProducts.forEach((product: any) => {
+      const key = getProductCategoryKey(product);
+      if (!key || categoriesById.has(key)) return;
 
-    if (fromMenuCats.length > 0) return fromMenuCats;
+      const category = getMenuCategoryForProduct(product);
+      if (category) {
+        categoriesById.set(key, {
+          id: String(category.id),
+          name: i18n.language === 'ar'
+            ? (category.nameAr || category.nameEn || category.id)
+            : (category.nameEn || category.nameAr || category.id),
+          icon: Tag,
+        });
+        return;
+      }
 
-    // ② Fallback: build buttons from the raw category strings on products
-    return Array.from(itemCategorySet).map((catKey: any) => {
-      const display = CATEGORY_DISPLAY[catKey as string];
-      return {
-        id: catKey,
+      const displayKey = String(product.category || key);
+      const display = CATEGORY_DISPLAY[displayKey] || CATEGORY_DISPLAY[key];
+      categoriesById.set(key, {
+        id: key,
         name: display
           ? (i18n.language === 'ar' ? display.ar : display.en)
-          : catKey,
+          : (product.category || key),
         icon: Tag,
-      };
+      });
     });
-  }, [productsData, menuCategories, selectedDepartment, i18n.language]);
+
+    return Array.from(categoriesById.values());
+  }, [productsData, selectedDepartment, i18n.language, getProductDepartment, getProductCategoryKey, getMenuCategoryForProduct]);
 
   // Helper: get the correct unit price for a POS order item, respecting the selected size
   // Defined here (before calculateTotal) so it can be used in useMemo callbacks

@@ -464,6 +464,33 @@ MenuCategorySchema.index({ id: 1 }, { unique: true });
 
 export const MenuCategoryModel = mongoose.model<IMenuCategory>("MenuCategory", MenuCategorySchema);
 
+export interface IProductImageAsset extends Document {
+  id: string;
+  tenantId: string;
+  fileName: string;
+  url: string;
+  contentType: string;
+  sizeBytes: number;
+  uploadedBy?: string;
+  uploadedAt: Date;
+}
+
+const ProductImageAssetSchema = new Schema<IProductImageAsset>({
+  id: { type: String, required: true, unique: true },
+  tenantId: { type: String, required: true, index: true },
+  fileName: { type: String, required: true },
+  url: { type: String, required: true },
+  contentType: { type: String, required: true, default: "image/webp" },
+  sizeBytes: { type: Number, required: true, default: 0 },
+  uploadedBy: { type: String },
+  uploadedAt: { type: Date, default: Date.now },
+});
+ProductImageAssetSchema.index({ tenantId: 1, uploadedAt: -1 });
+ProductImageAssetSchema.index({ tenantId: 1, url: 1 }, { unique: true });
+export const ProductImageAssetModel =
+  mongoose.models["ProductImageAsset"] ||
+  mongoose.model<IProductImageAsset>("ProductImageAsset", ProductImageAssetSchema);
+
 // Custom Banners for Admin Control
 export interface ICustomBanner extends Document {
   id: string;

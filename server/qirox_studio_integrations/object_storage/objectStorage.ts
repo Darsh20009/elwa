@@ -96,7 +96,7 @@ export class ObjectStorageService {
   }
 
   // Downloads an object to the response.
-  async downloadObject(file: File, res: Response, cacheTtlSec: number = 3600) {
+  async downloadObject(file: File, res: Response, cacheTtlSec: number = 30 * 24 * 60 * 60) {
     try {
       // Get file metadata
       const [metadata] = await file.getMetadata();

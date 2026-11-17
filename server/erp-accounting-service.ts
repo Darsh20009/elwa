@@ -684,6 +684,45 @@ export class ErpAccountingService {
   }
 
   /**
+   * Rewind current account balances to the requested date using later postings.
+   */
+  private static async getAccountBalancesAsOf(
+    tenantId: string,
+    accounts: IAccount[],
+    asOfDate: Date
+  ): Promise<Map<string, number>> {
+    const endOfDay = new Date(asOfDate);
+    if (Number.isNaN(endOfDay.getTime())) {
+      return new Map(accounts.map(account => [account.id, Number(account.currentBalance) || 0]));
+    }
+    endOfDay.setUTCHours(23, 59, 59, 999);
+
+    const balances = new Map(
+      accounts.map(account => [account.id, Number(account.currentBalance) || 0])
+    );
+    if (endOfDay.getTime() >= Date.now()) return balances;
+
+    const futureEntries = await JournalEntryModel.find({
+      tenantId,
+      status: { $in: ["posted", "reversed"] },
+      entryDate: { $gt: endOfDay },
+    }).select("lines").lean();
+    const accountsById = new Map(accounts.map(account => [account.id, account]));
+
+    for (const entry of futureEntries) {
+      for (const line of entry.lines || []) {
+        const account = accountsById.get(line.accountId);
+        if (!account) continue;
+        const futureMovement = account.normalBalance === "debit"
+          ? (Number(line.debit) || 0) - (Number(line.credit) || 0)
+          : (Number(line.credit) || 0) - (Number(line.debit) || 0);
+        balances.set(account.id, (balances.get(account.id) || 0) - futureMovement);
+      }
+    }
+    return balances;
+  }
+
+  /**
    * Get financial reports
    */
   static async getTrialBalance(
@@ -697,14 +736,18 @@ export class ErpAccountingService {
     creditBalance: number;
   }>> {
     const accounts = await AccountModel.find({ tenantId, isActive: 1 }).sort({ accountNumber: 1 });
-    
-    return accounts.map((account) => ({
-      accountNumber: account.accountNumber,
-      accountName: account.nameAr,
-      accountType: account.accountType,
-      debitBalance: account.normalBalance === "debit" ? account.currentBalance : 0,
-      creditBalance: account.normalBalance === "credit" ? account.currentBalance : 0,
-    }));
+    const balances = await this.getAccountBalancesAsOf(tenantId, accounts, endDate);
+
+    return accounts.map((account) => {
+      const balance = balances.get(account.id) || 0;
+      return {
+        accountNumber: account.accountNumber,
+        accountName: account.nameAr,
+        accountType: account.accountType,
+        debitBalance: account.normalBalance === "debit" ? Math.max(balance, 0) : Math.max(-balance, 0),
+        creditBalance: account.normalBalance === "credit" ? Math.max(balance, 0) : Math.max(-balance, 0),
+      };
+    });
   }
 
   /**
@@ -731,7 +774,14 @@ export class ErpAccountingService {
       status: "posted",
     };
 
-    const entries = await JournalEntryModel.find(query);
+    const entries = await JournalEntryModel.find(query).lean();
+    const accountIds = Array.from(new Set(entries.flatMap(entry => entry.lines.map(line => line.accountId))));
+    const accounts = accountIds.length
+      ? await AccountModel.find({ tenantId, id: { $in: accountIds } })
+          .select("id accountType accountNumber nameAr")
+          .lean()
+      : [];
+    const accountsById = new Map(accounts.map(account => [account.id, account]));
 
     const revenueAccounts: Record<string, number> = {};
     const expenseAccounts: Record<string, number> = {};
@@ -741,7 +791,7 @@ export class ErpAccountingService {
       for (const line of entry.lines) {
         if (branchId && line.branchId !== branchId) continue;
 
-        const account = await AccountModel.findOne({ id: line.accountId, tenantId });
+        const account = accountsById.get(line.accountId);
         if (!account) continue;
 
         if (account.accountType === "revenue") {
@@ -770,11 +820,11 @@ export class ErpAccountingService {
     const OrderModel = mongoose.models["Order"] as any;
     if (OrderModel) {
       const orderQuery: any = {
+        tenantId,
         status: { $in: ["completed", "delivered", "paid", "payment_confirmed"] },
         createdAt: { $gte: startDate, $lte: endDate },
       };
       if (branchId) orderQuery.branchId = branchId;
-      if (tenantId && tenantId !== process.env.TENANT_ID!) orderQuery.tenantId = tenantId;
 
       const orders = await OrderModel.find(orderQuery).lean();
 
@@ -798,32 +848,37 @@ export class ErpAccountingService {
           source = "hybrid";
         }
 
-        // Also include approved ERP expenses in the period
-        const ExpenseErpModel = mongoose.models["ExpenseErp"] as any;
-        if (ExpenseErpModel && totalExpenses === 0) {
-          const erpExpenses = await ExpenseErpModel.find({
-            tenantId,
-            status: "approved",
-            createdAt: { $gte: startDate, $lte: endDate },
-          }).lean();
-          for (const exp of erpExpenses) {
-            const key = exp.category || "مصروفات تشغيلية";
-            const categoryLabel: Record<string, string> = {
-              operating: "مصروفات تشغيلية",
-              salary: "رواتب وأجور",
-              rent: "إيجار",
-              utilities: "مرافق",
-              marketing: "تسويق",
-              maintenance: "صيانة",
-              other: "مصروفات أخرى",
-            };
-            const expKey = categoryLabel[key] || key;
-            const existing = expenseAccounts[expKey] || 0;
-            expenseAccounts[expKey] = existing + (exp.totalAmount || exp.amount || 0);
-          }
-          totalExpenses = Object.values(expenseAccounts).reduce((s, v) => s + v, 0);
-        }
       }
+    }
+
+    // Include approved ERP expenses even when the selected period has no orders.
+    const ExpenseErpModel = mongoose.models["ExpenseErp"] as any;
+    if (ExpenseErpModel && totalExpenses === 0) {
+      const expenseQuery: any = {
+        tenantId,
+        status: "approved",
+        expenseDate: { $gte: startDate, $lte: endDate },
+      };
+      if (branchId) expenseQuery.branchId = branchId;
+      const erpExpenses = await ExpenseErpModel.find(expenseQuery).lean();
+      const categoryLabels: Record<string, string> = {
+        operating: "مصروفات تشغيلية",
+        salary: "رواتب وأجور",
+        salaries: "رواتب وأجور",
+        rent: "إيجار",
+        utilities: "مرافق",
+        marketing: "تسويق",
+        maintenance: "صيانة",
+        other: "مصروفات أخرى",
+      };
+      for (const expense of erpExpenses) {
+        const category = expense.category || "operating";
+        const label = categoryLabels[category] || category;
+        expenseAccounts[label] = (expenseAccounts[label] || 0) +
+          (Number(expense.totalAmount) || Number(expense.amount) || 0);
+      }
+      totalExpenses = Object.values(expenseAccounts).reduce((sum, amount) => sum + amount, 0);
+      if (erpExpenses.length && source === "journal") source = "hybrid";
     }
 
     const grossProfit = totalRevenue - cogs;

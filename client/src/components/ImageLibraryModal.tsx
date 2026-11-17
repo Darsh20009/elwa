@@ -6,6 +6,7 @@ import { Upload, Check, Image as ImageIcon, Loader2, Trash2 } from "lucide-react
 import { useToast } from "@/hooks/use-toast";
 
 interface DrinkImage {
+  id?: string;
   filename: string;
   url: string;
   uploadedAt: string;
@@ -164,7 +165,7 @@ export function ImageLibraryModal({ open, onClose, onSelect, currentUrl }: Image
                 const isSelected = selected === img.url;
                 return (
                   <button
-                    key={img.filename}
+                    key={img.id || img.url}
                     type="button"
                     onClick={() => setSelected(isSelected ? null : img.url)}
                     className={`relative aspect-square rounded-xl overflow-hidden border-2 transition-all ${
@@ -172,7 +173,7 @@ export function ImageLibraryModal({ open, onClose, onSelect, currentUrl }: Image
                         ? "border-accent shadow-lg shadow-accent/20 scale-[0.97]"
                         : "border-primary/20 hover:border-primary/50"
                     }`}
-                    data-testid={`image-option-${img.filename}`}
+                    data-testid={`image-option-${img.id || img.filename}`}
                   >
                     <img
                       src={img.url}
