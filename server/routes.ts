@@ -15124,14 +15124,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const { ProductImageAssetModel } = await import("@shared/schema");
-      const { ObjectStorageService } = await import("./qirox_studio_integrations/object_storage");
-      const storageService = new ObjectStorageService();
       const image = await saveProductImageAsset({
         inputBuffer,
         originalFilename: path.basename(req.file.originalname || "product-image"),
         tenantId: String(tenantId),
         uploadedBy: req.employee?.id,
-        storage: storageService,
         model: ProductImageAssetModel,
         optimize: async () => optimizedBuffer,
       });
@@ -15147,6 +15144,34 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(500).json({ error: "Failed to upload image" });
     } finally {
       try { fs.unlinkSync(req.file.path); } catch {}
+    }
+  });
+
+  // Product-library images are stored in MongoDB and intentionally excluded
+  // from ordinary metadata queries via the schema's select:false setting.
+  app.get("/api/product-images/:id/image", async (req, res) => {
+    try {
+      const { ProductImageAssetModel } = await import("@shared/schema");
+      const asset = await ProductImageAssetModel.findOne({ id: req.params.id })
+        .select("+imageData")
+        .lean() as unknown as {
+          imageData?: Buffer;
+          sizeBytes?: number;
+        } | null;
+      if (!asset?.imageData) {
+        return res.status(404).json({ error: "الصورة غير موجودة" });
+      }
+
+      res.set({
+        "Content-Type": "image/webp",
+        "Content-Length": String(asset.sizeBytes || asset.imageData.length),
+        "Cache-Control": "public, max-age=31536000, immutable",
+        "X-Content-Type-Options": "nosniff",
+      });
+      return res.end(asset.imageData);
+    } catch (error) {
+      console.error("Error serving product image from MongoDB:", error);
+      return res.status(500).json({ error: "تعذر تحميل الصورة" });
     }
   });
 

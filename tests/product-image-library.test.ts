@@ -2,37 +2,21 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   listProductImageAssets,
-  ProductImageAssetModel,
-  ProductImageStorage,
   ProductImageUploadError,
   saveProductImageAsset,
 } from "../server/product-image-library";
 
-test("uploads an optimized image and records it for the same tenant", async () => {
+test("stores an optimized image buffer in MongoDB and returns its image route", async () => {
   const inputBuffer = Buffer.from("original");
   const optimizedBuffer = Buffer.from("optimized-webp");
-  const uploadCalls: Array<{ url: string; init?: RequestInit }> = [];
   const created: any[] = [];
-  const aclCalls: any[] = [];
-  const storage: ProductImageStorage = {
-    async getObjectEntityUploadURL() {
-      return "https://storage.example/signed-upload";
-    },
-    normalizeObjectEntityPath() {
-      return "/objects/uploads/image-1";
-    },
-    async trySetObjectEntityAclPolicy(path, policy) {
-      aclCalls.push({ path, policy });
-      return path;
-    },
-  };
+  let optimizedInput: Buffer | undefined;
 
   const result = await saveProductImageAsset({
     inputBuffer,
     originalFilename: "drink.jpg",
     tenantId: "tenant-1",
     uploadedBy: "manager-1",
-    storage,
     model: {
       async create(record) {
         created.push(record);
@@ -43,46 +27,32 @@ test("uploads an optimized image and records it for the same tenant", async () =
       },
     },
     async optimize(buffer) {
-      assert.equal(buffer, inputBuffer);
+      optimizedInput = buffer;
       return optimizedBuffer;
-    },
-    async upload(url, init) {
-      uploadCalls.push({ url, init });
-      return new Response(null, { status: 200 });
     },
     now: () => new Date("2026-11-17T10:00:00.000Z"),
   });
 
-  assert.equal(uploadCalls.length, 1);
-  assert.equal(uploadCalls[0].url, "https://storage.example/signed-upload");
-  assert.equal(uploadCalls[0].init?.method, "PUT");
-  assert.equal(uploadCalls[0].init?.headers && (uploadCalls[0].init.headers as Record<string, string>)["Content-Type"], "image/webp");
+  assert.equal(optimizedInput, inputBuffer);
   assert.equal(created[0].sizeBytes, optimizedBuffer.length);
   assert.equal(created[0].tenantId, "tenant-1");
-  assert.deepEqual(aclCalls, [{
-    path: "/objects/uploads/image-1",
-    policy: { owner: "tenant-1", visibility: "public" },
-  }]);
-  assert.deepEqual(result, {
-    id: "/objects/uploads/image-1",
-    filename: "drink.jpg",
-    url: "/objects/uploads/image-1",
-    uploadedAt: "2026-11-17T10:00:00.000Z",
-  });
+  assert.equal(created[0].imageData, optimizedBuffer);
+  assert.equal(created[0].contentType, "image/webp");
+  assert.match(created[0].id, /^[0-9a-f-]{36}$/i);
+  assert.equal(created[0].url, `/api/product-images/${created[0].id}/image`);
+  assert.equal(result.id, created[0].id);
+  assert.equal(result.filename, "drink.jpg");
+  assert.equal(result.url, created[0].url);
+  assert.equal(result.uploadedAt, "2026-11-17T10:00:00.000Z");
 });
 
-test("does not create an asset if object storage rejects the upload", async () => {
+test("does not create an asset when image optimization produces no bytes", async () => {
   let created = false;
   await assert.rejects(
     saveProductImageAsset({
       inputBuffer: Buffer.from("image"),
       originalFilename: "drink.jpg",
       tenantId: "tenant-1",
-      storage: {
-        async getObjectEntityUploadURL() { return "https://storage.example/upload"; },
-        normalizeObjectEntityPath() { return "/objects/image-2"; },
-        async trySetObjectEntityAclPolicy(path) { return path; },
-      },
       model: {
         async create(record) {
           created = true;
@@ -92,8 +62,7 @@ test("does not create an asset if object storage rejects the upload", async () =
           throw new Error("Listing is not expected during upload");
         },
       },
-      async optimize(buffer) { return buffer; },
-      async upload() { return new Response(null, { status: 500 }); },
+      async optimize() { return Buffer.alloc(0); },
     }),
     ProductImageUploadError,
   );

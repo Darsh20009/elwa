@@ -1,11 +1,4 @@
-export interface ProductImageStorage {
-  getObjectEntityUploadURL(): Promise<string>;
-  normalizeObjectEntityPath(path: string): string;
-  trySetObjectEntityAclPolicy(
-    path: string,
-    policy: { owner: string; visibility: "public" | "private" },
-  ): Promise<string>;
-}
+import { randomUUID } from "crypto";
 
 export interface ProductImageAssetRecord {
   id: string;
@@ -14,6 +7,7 @@ export interface ProductImageAssetRecord {
   url: string;
   contentType: string;
   sizeBytes: number;
+  imageData: Buffer;
   uploadedBy?: string;
   uploadedAt: Date;
 }
@@ -46,42 +40,25 @@ export async function saveProductImageAsset(options: {
   originalFilename: string;
   tenantId: string;
   uploadedBy?: string;
-  storage: ProductImageStorage;
   model: ProductImageAssetModel;
   optimize: (buffer: Buffer) => Promise<Buffer>;
-  upload?: typeof fetch;
   now?: () => Date;
 }): Promise<ProductImageLibraryEntry> {
   const optimizedBuffer = await options.optimize(options.inputBuffer);
-  const uploadURL = await options.storage.getObjectEntityUploadURL();
-  const objectPath = options.storage.normalizeObjectEntityPath(uploadURL);
-  const upload = options.upload || fetch;
-  const uploadResponse = await upload(uploadURL, {
-    method: "PUT",
-    body: optimizedBuffer as unknown as BodyInit,
-    headers: {
-      "Content-Type": "image/webp",
-      "Content-Length": String(optimizedBuffer.length),
-    },
-  });
-
-  if (!uploadResponse.ok) {
-    throw new ProductImageUploadError("Object storage upload failed");
+  if (!optimizedBuffer.length) {
+    throw new ProductImageUploadError("لم يتم إنشاء بيانات للصورة بعد المعالجة");
   }
-
-  await options.storage.trySetObjectEntityAclPolicy(objectPath, {
-    owner: options.tenantId,
-    visibility: "public",
-  });
-
+  const id = randomUUID();
+  const url = `/api/product-images/${id}/image`;
   const uploadedAt = (options.now || (() => new Date()))();
   const asset = await options.model.create({
-    id: objectPath,
+    id,
     tenantId: options.tenantId,
     fileName: options.originalFilename,
-    url: objectPath,
+    url,
     contentType: "image/webp",
     sizeBytes: optimizedBuffer.length,
+    imageData: optimizedBuffer,
     uploadedBy: options.uploadedBy,
     uploadedAt,
   });

@@ -471,6 +471,7 @@ export interface IProductImageAsset extends Document {
   url: string;
   contentType: string;
   sizeBytes: number;
+  imageData: Buffer;
   uploadedBy?: string;
   uploadedAt: Date;
 }
@@ -482,6 +483,7 @@ const ProductImageAssetSchema = new Schema<IProductImageAsset>({
   url: { type: String, required: true },
   contentType: { type: String, required: true, default: "image/webp" },
   sizeBytes: { type: Number, required: true, default: 0 },
+  imageData: { type: Buffer, required: true, select: false },
   uploadedBy: { type: String },
   uploadedAt: { type: Date, default: Date.now },
 });
