@@ -10,6 +10,7 @@ import { createPosInvoicePdf, createPosInvoiceUrl, verifyPosInvoiceToken } from 
 import { foodicsMonthlySales, foodicsMonthlySalesInfo } from "@shared/foodics-monthly-sales";
 import { normalizeCustomerPhone } from "@shared/customer-phone";
 import { receiptTemplateSchema } from "@shared/receipt-template";
+import { listProductImageAssets, ProductImageUploadError, saveProductImageAsset } from "./product-image-library";
 
 // Must match SESSION_VERSION in server/index.ts — bump both together to force re-login on all devices
 const SESSION_VERSION = '2026-07-06-v1';
@@ -15110,44 +15111,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { ProductImageAssetModel } = await import("@shared/schema");
       const { ObjectStorageService } = await import("./qirox_studio_integrations/object_storage");
       const storageService = new ObjectStorageService();
-      const uploadURL = await storageService.getObjectEntityUploadURL();
-      const objectPath = storageService.normalizeObjectEntityPath(uploadURL);
-      const uploadResponse = await fetch(uploadURL, {
-        method: "PUT",
-        body: optimizedBuffer as unknown as BodyInit,
-        headers: {
-          "Content-Type": "image/webp",
-          "Content-Length": String(optimizedBuffer.length),
-        },
-      });
-
-      if (!uploadResponse.ok) {
-        return res.status(502).json({ error: "Object storage upload failed" });
-      }
-
-      await storageService.trySetObjectEntityAclPolicy(objectPath, {
-        owner: String(tenantId),
-        visibility: "public",
-      });
-
-      const asset = await ProductImageAssetModel.create({
-        id: objectPath,
+      const image = await saveProductImageAsset({
+        inputBuffer,
+        originalFilename: path.basename(req.file.originalname || "product-image"),
         tenantId: String(tenantId),
-        fileName: path.basename(req.file.originalname || "product-image"),
-        url: objectPath,
-        contentType: "image/webp",
-        sizeBytes: optimizedBuffer.length,
         uploadedBy: req.employee?.id,
-        uploadedAt: new Date(),
+        storage: storageService,
+        model: ProductImageAssetModel,
+        optimize: async () => optimizedBuffer,
       });
-
-      res.json({
-        id: asset.id,
-        filename: asset.fileName,
-        url: asset.url,
-        uploadedAt: asset.uploadedAt,
-      });
+      res.json(image);
     } catch (error) {
+      if (error instanceof ProductImageUploadError) {
+        return res.status(502).json({ error: error.message });
+      }
       if (error instanceof ObjectStorageNotConfiguredError) {
         return res.status(503).json({ error: "Object storage is not configured" });
       }
@@ -15167,19 +15144,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(500).json({ error: "Tenant is not configured" });
       }
 
-      const storedImages = await ProductImageAssetModel.find({ tenantId: String(tenantId) })
-        .sort({ uploadedAt: -1 })
-        .lean();
-      const result = storedImages.map((image: any) => ({
-        id: image.id,
-        filename: image.fileName,
-        url: image.url,
-        uploadedAt: new Date(image.uploadedAt).toISOString(),
-      }));
-
       const drinksDir = path.resolve(__dirname, '..', 'attached_assets', 'drinks');
+      const legacyImages = [];
       if (fs.existsSync(drinksDir)) {
-        const legacyImages = fs.readdirSync(drinksDir)
+        legacyImages.push(...fs.readdirSync(drinksDir)
           .filter(f => /\.(png|jpg|jpeg|webp)$/i.test(f))
           .map((filename) => {
             const uploadedAt = fs.statSync(path.join(drinksDir, filename)).mtime;
@@ -15189,11 +15157,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
               url: `/attached_assets/drinks/${filename}`,
               uploadedAt: uploadedAt.toISOString(),
             };
-          });
-        result.push(...legacyImages);
+          }));
       }
 
-      result.sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime());
+      const result = await listProductImageAssets({
+        tenantId: String(tenantId),
+        model: ProductImageAssetModel,
+        legacyImages,
+      });
       res.setHeader("Cache-Control", "private, no-store");
       res.json(result);
     } catch (error) {

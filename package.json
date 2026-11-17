@@ -13,6 +13,7 @@
     "build:tenant": "node scripts/customize-tenant.mjs && npm run build",
     "start": "NODE_ENV=production node dist/index.js",
     "test:print-agent": "node --test tests/print-agent.test.cjs",
+    "test:product-image-library": "node --import tsx --test tests/product-image-library.test.ts",
     "check": "tsc"
   },
   "dependencies": {
