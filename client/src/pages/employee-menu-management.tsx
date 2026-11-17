@@ -1822,6 +1822,8 @@ setEditImageUrls((item as any).imageUrls || (item.imageUrl ? [item.imageUrl] : [
  src={item.imageUrl ? (item.imageUrl.startsWith('/') ? item.imageUrl : `/${item.imageUrl}`) : getCoffeeImage(item.id)}
  alt={item.nameAr}
  className="w-16 h-16 rounded-lg object-cover"
+ loading="lazy"
+ decoding="async"
  onError={(e) => {
  e.currentTarget.src = getCoffeeImage(item.id);
  }}

@@ -19284,13 +19284,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (finalBranchId) allRefundsQuery.branchId = finalBranchId;
 
       const [orders, expenses, invoices, allOrders, allExpenses, refunds, allRefunds, cancelledOrders, allCancelledOrders] = await Promise.all([
-        OrderModel.find(orderQuery),
-        ExpenseModel.find(expenseQuery),
-        TaxInvoiceModel.find(invoiceQuery),
-        OrderModel.find(allOrdersQuery),
-        ExpenseModel.find(allExpensesQuery),
-        RefundOrderModel.find(refundQuery),
-        RefundOrderModel.find(allRefundsQuery),
+        OrderModel.find(orderQuery)
+          .select('totalAmount costOfGoods paymentMethod items.coffeeItemId items.id items.coffeeItem.nameAr items.nameAr items.quantity items.price')
+          .lean(),
+        ExpenseModel.find(expenseQuery).select('category totalAmount').lean(),
+        TaxInvoiceModel.find(invoiceQuery).select('taxAmount').lean(),
+        OrderModel.find(allOrdersQuery).select('createdAt totalAmount costOfGoods').lean(),
+        ExpenseModel.find(allExpensesQuery).select('date totalAmount').lean(),
+        RefundOrderModel.find(refundQuery)
+          .select('createdAt refundAmount statusBeforeRefund restockCogsAmount cashAmount cardAmount')
+          .lean(),
+        RefundOrderModel.find(allRefundsQuery)
+          .select('createdAt refundAmount statusBeforeRefund restockCogsAmount')
+          .lean(),
         OrderModel.find(cancelledOrderQuery).select('totalAmount costOfGoods').lean(),
         OrderModel.find(allCancelledOrdersQuery).select('totalAmount costOfGoods createdAt').lean(),
       ]);

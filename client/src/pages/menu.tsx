@@ -1180,6 +1180,8 @@ export default function MenuPage() {
                       src={item.imageUrl || clunyLogo} 
                       className={`transition-transform duration-500 group-hover:scale-110 ${item.imageUrl ? 'w-full h-full object-cover' : 'w-3/4 h-3/4 object-contain p-1'}`}
                       alt={i18n.language === 'ar' ? item.nameAr : item.nameEn || item.nameAr} 
+                      loading="lazy"
+                      decoding="async"
                       onError={(e) => { const img = e.target as HTMLImageElement; img.src = clunyLogo; img.className = img.className.replace('object-cover', 'object-contain') + ' p-1 w-3/4 h-3/4'; }}
                     />
                   </div>

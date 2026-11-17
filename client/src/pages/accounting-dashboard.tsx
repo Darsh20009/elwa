@@ -291,6 +291,7 @@ export default function AccountingDashboardPage() {
         topSellingItems: data.topSellingItems || [],
       };
     },
+    enabled: activeTab === "overview" || activeTab === "reports",
   });
 
   const { data: expensesData, isLoading: isExpensesLoading } = useQuery<{ expenses: Expense[]; total: number }>({
@@ -302,6 +303,7 @@ export default function AccountingDashboardPage() {
       if (!res.ok) throw new Error("Failed to fetch expenses");
       return res.json();
     },
+    enabled: activeTab === "expenses",
   });
 
   const { data: revenuesData, isLoading: isRevenuesLoading } = useQuery<{ revenues: Revenue[]; total: number }>({
@@ -313,6 +315,7 @@ export default function AccountingDashboardPage() {
       if (!res.ok) throw new Error("Failed to fetch revenues");
       return res.json();
     },
+    enabled: activeTab === "revenues",
   });
 
   const { data: ordersData, isLoading: isOrdersLoading } = useQuery<{ orders: Order[] }>({

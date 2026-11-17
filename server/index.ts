@@ -2,7 +2,7 @@ import { registerSaasServices } from "./saas-services";
 import { bootstrapSaasTenant } from "./saas-bootstrap";
 import { saasFeatureGate } from "./saas-policy";
 // Polyfill Web Crypto API for MongoDB driver compatibility (must be first)
-import { webcrypto } from "node:crypto";
+import { createHash, webcrypto } from "node:crypto";
 if (!globalThis.crypto) {
   (globalThis as any).crypto = webcrypto;
 }
@@ -12,6 +12,7 @@ import session from "express-session";
 import MongoStore from "connect-mongo";
 import compression from "compression";
 import fs from "fs";
+import { tmpdir } from "node:os";
 import path from "path";
 import { cache } from "./cache";
 import { queue } from "./queue";
@@ -585,30 +586,97 @@ app.use((req, res, next) => {
 });
 
 
-// Prefer generated WebP files for browsers that support them while preserving
-// the original URLs stored in MongoDB. This keeps existing product/image URLs
-// compatible and substantially reduces outbound bandwidth.
-function serveOptimizedWebp(rootDir: string) {
-  return (req: Request, res: Response, next: NextFunction) => {
-    if (req.method !== "GET" && req.method !== "HEAD") return next();
-    if (!req.headers.accept?.includes("image/webp")) return next();
-    if (!/\.(png|jpe?g)$/i.test(req.path)) return next();
+const imageConversionPromises = new Map<string, Promise<void>>();
+const optimizedStaticImageCacheDir = path.join(tmpdir(), "elwa-static-webp-cache");
+const staticWebpQuality = 92;
 
-    const relativePath = decodeURIComponent(req.path).replace(/^[/\\]+/, "");
+// Negotiate WebP at the existing URL so stored image references stay unchanged.
+// Converted files live in the temporary cache; the originals are never modified.
+function serveOptimizedWebp(rootDir: string) {
+  return async (req: Request, res: Response, next: NextFunction) => {
+    if (!/\.(png|jpe?g)$/i.test(req.path)) return next();
+    res.vary("Accept");
+    if (req.method !== "GET" || !/image\/webp/i.test(req.headers.accept || "")) return next();
+
+    let relativePath: string;
+    try {
+      relativePath = decodeURIComponent(req.path).replace(/^[/\\]+/, "");
+    } catch {
+      return next();
+    }
     const originalPath = path.resolve(rootDir, relativePath);
     const rootPath = path.resolve(rootDir) + path.sep;
     if (!originalPath.startsWith(rootPath)) return next();
 
-    const extension = path.extname(originalPath);
-    const webpPath = originalPath.slice(0, -extension.length) + ".optimized.webp";
-    if (!fs.existsSync(webpPath)) return next();
+    try {
+      const sourceStat = await fs.promises.stat(originalPath);
+      if (!sourceStat.isFile()) return next();
+      const cacheKey = createHash("sha256")
+        .update(`${originalPath}:${sourceStat.size}:${sourceStat.mtimeMs}:q${staticWebpQuality}`)
+        .digest("hex");
+      const webpPath = path.join(optimizedStaticImageCacheDir, `${cacheKey}.webp`);
+      const skipPath = `${webpPath}.skip`;
 
-    res.set({
-      "Content-Type": "image/webp",
-      "Cache-Control": "public, max-age=2592000, stale-while-revalidate=86400",
-      Vary: "Accept",
-    });
-    return res.sendFile(webpPath);
+      try {
+        await fs.promises.access(webpPath);
+      } catch {
+        try {
+          await fs.promises.access(skipPath);
+          return next();
+        } catch {}
+
+        let conversion = imageConversionPromises.get(webpPath);
+        if (!conversion) {
+          conversion = (async () => {
+            await fs.promises.mkdir(optimizedStaticImageCacheDir, { recursive: true });
+            const tempPath = `${webpPath}.${process.pid}.tmp`;
+            try {
+              const sharpModule = await import("sharp");
+              const sharp = (sharpModule as any).default || sharpModule;
+              await sharp(originalPath)
+                .rotate()
+                .webp({ quality: staticWebpQuality, effort: 4, alphaQuality: 100 })
+                .toFile(tempPath);
+              const optimizedStat = await fs.promises.stat(tempPath);
+              if (optimizedStat.size < sourceStat.size) {
+                await fs.promises.rename(tempPath, webpPath);
+              } else {
+                await fs.promises.writeFile(skipPath, "original is smaller");
+              }
+            } finally {
+              await fs.promises.rm(tempPath, { force: true }).catch(() => {});
+            }
+          })();
+          imageConversionPromises.set(webpPath, conversion);
+        }
+        try {
+          await conversion;
+        } finally {
+          if (imageConversionPromises.get(webpPath) === conversion) {
+            imageConversionPromises.delete(webpPath);
+          }
+        }
+      }
+
+      try {
+        await fs.promises.access(webpPath);
+      } catch {
+        return next();
+      }
+
+      return res.sendFile(webpPath, {
+        maxAge: "30d",
+        headers: {
+          "Content-Type": "image/webp",
+          "Cache-Control": "public, max-age=2592000, stale-while-revalidate=86400",
+        },
+      }, (error) => {
+        if (error && !res.headersSent) next();
+      });
+    } catch {
+      // Serving the original image is preferable to failing the request.
+      return next();
+    }
   };
 }
 

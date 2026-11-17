@@ -2435,6 +2435,8 @@ export default function PosSystem() {
                             src={item.imageUrl} 
                             alt={item.nameAr}
                             className="w-full h-full object-cover"
+                            loading="lazy"
+                            decoding="async"
                           />
                         ) : (
                           <div className="w-full h-full bg-muted flex items-center justify-center">

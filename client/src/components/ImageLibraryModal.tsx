@@ -30,7 +30,6 @@ export function ImageLibraryModal({ open, onClose, onSelect, currentUrl }: Image
   const { data: images = [], isLoading } = useQuery<DrinkImage[]>({
     queryKey: ["/api/drink-images"],
     enabled: open,
-    staleTime: 0,
   });
 
   const handleUpload = async (file: File) => {
@@ -179,6 +178,8 @@ export function ImageLibraryModal({ open, onClose, onSelect, currentUrl }: Image
                       src={img.url}
                       alt={img.filename}
                       className="w-full h-full object-cover"
+                      loading="lazy"
+                      decoding="async"
                       onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
                     />
                     {isSelected && (
