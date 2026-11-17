@@ -5,6 +5,7 @@
 
 import { nanoid } from "nanoid";
 import { generateZatcaTLV, generateZatcaQRCode, type ZatcaInvoiceData } from "./zatca-utils";
+import { applySalesRefunds, calculateAccountBalances } from "./financial-report-calculations";
 import {
   AccountModel,
   JournalEntryModel,
@@ -18,6 +19,7 @@ import {
   BankStatementModel,
   BankTransactionModel,
   OrderModel,
+  RefundOrderModel,
   type IAccount,
   type IJournalEntry,
   type IInvoice,
@@ -689,37 +691,16 @@ export class ErpAccountingService {
   private static async getAccountBalancesAsOf(
     tenantId: string,
     accounts: IAccount[],
-    asOfDate: Date
+    asOfDate: Date,
+    branchId?: string,
   ): Promise<Map<string, number>> {
-    const endOfDay = new Date(asOfDate);
-    if (Number.isNaN(endOfDay.getTime())) {
-      return new Map(accounts.map(account => [account.id, Number(account.currentBalance) || 0]));
-    }
-    endOfDay.setUTCHours(23, 59, 59, 999);
-
-    const balances = new Map(
-      accounts.map(account => [account.id, Number(account.currentBalance) || 0])
-    );
-    if (endOfDay.getTime() >= Date.now()) return balances;
-
-    const futureEntries = await JournalEntryModel.find({
+    const entries = await JournalEntryModel.find({
       tenantId,
       status: { $in: ["posted", "reversed"] },
-      entryDate: { $gt: endOfDay },
-    }).select("lines").lean();
-    const accountsById = new Map(accounts.map(account => [account.id, account]));
+      entryDate: { $lte: asOfDate },
+    }).select("status entryDate lines").lean();
 
-    for (const entry of futureEntries) {
-      for (const line of entry.lines || []) {
-        const account = accountsById.get(line.accountId);
-        if (!account) continue;
-        const futureMovement = account.normalBalance === "debit"
-          ? (Number(line.debit) || 0) - (Number(line.credit) || 0)
-          : (Number(line.credit) || 0) - (Number(line.debit) || 0);
-        balances.set(account.id, (balances.get(account.id) || 0) - futureMovement);
-      }
-    }
-    return balances;
+    return calculateAccountBalances(accounts, entries, asOfDate, branchId);
   }
 
   /**
@@ -727,7 +708,8 @@ export class ErpAccountingService {
    */
   static async getTrialBalance(
     tenantId: string,
-    endDate: Date
+    endDate: Date,
+    branchId?: string,
   ): Promise<Array<{
     accountNumber: string;
     accountName: string;
@@ -736,10 +718,11 @@ export class ErpAccountingService {
     creditBalance: number;
   }>> {
     const accounts = await AccountModel.find({ tenantId, isActive: 1 }).sort({ accountNumber: 1 });
-    const balances = await this.getAccountBalancesAsOf(tenantId, accounts, endDate);
+    const balances = await this.getAccountBalancesAsOf(tenantId, accounts, endDate, branchId);
 
-    return accounts.map((account) => {
+    return accounts.flatMap((account) => {
       const balance = balances.get(account.id) || 0;
+      if (balance === 0) return [];
       return {
         accountNumber: account.accountNumber,
         accountName: account.nameAr,
@@ -821,7 +804,7 @@ export class ErpAccountingService {
     if (OrderModel) {
       const orderQuery: any = {
         tenantId,
-        status: { $in: ["completed", "delivered", "paid", "payment_confirmed"] },
+        status: { $in: ["completed", "delivered", "paid", "payment_confirmed", "refunded"] },
         createdAt: { $gte: startDate, $lte: endDate },
       };
       if (branchId) orderQuery.branchId = branchId;
@@ -851,17 +834,67 @@ export class ErpAccountingService {
       }
     }
 
-    // Include approved ERP expenses even when the selected period has no orders.
+    const refundQuery: any = {
+      tenantId,
+      status: "completed",
+      createdAt: { $gte: startDate, $lte: endDate },
+    };
+    if (branchId) refundQuery.branchId = branchId;
+    const refunds = await RefundOrderModel.find(refundQuery)
+      .select("refundAmount restockCogsAmount statusBeforeRefund")
+      .lean();
+    if (refunds.length) {
+      const revenueBeforeRefunds = totalRevenue;
+      const reportRefunds = refunds.map((refund) => ({
+        refundAmount: Number(refund.refundAmount) || 0,
+        restockCogsAmount: Number(refund.restockCogsAmount) || 0,
+        statusBeforeRefund: refund.statusBeforeRefund || "",
+      }));
+      const adjusted = applySalesRefunds(totalRevenue, cogs, reportRefunds);
+      totalRevenue = adjusted.revenue;
+      cogs = adjusted.cogs;
+      const refundRevenueAdjustment = totalRevenue - revenueBeforeRefunds;
+      if (refundRevenueAdjustment !== 0) {
+        revenue.push({ accountName: "مرتجعات المبيعات بعد استبعاد الضريبة", amount: refundRevenueAdjustment });
+      }
+      if (source !== "orders") source = "hybrid";
+    }
+
+    // Include ERP expenses that are not already represented by a posted journal.
     const ExpenseErpModel = mongoose.models["ExpenseErp"] as any;
-    if (ExpenseErpModel && totalExpenses === 0) {
+    if (ExpenseErpModel) {
       const expenseQuery: any = {
         tenantId,
-        status: "approved",
+        status: { $in: ["approved", "paid"] },
         expenseDate: { $gte: startDate, $lte: endDate },
       };
       if (branchId) expenseQuery.branchId = branchId;
       const erpExpenses = await ExpenseErpModel.find(expenseQuery).lean();
+      const expenseIds = erpExpenses.map((expense: any) => String(expense.id));
+      const linkedJournalIds = erpExpenses
+        .map((expense: any) => expense.journalEntryId)
+        .filter(Boolean);
+      const linkedEntries = expenseIds.length || linkedJournalIds.length
+        ? await JournalEntryModel.find({
+            tenantId,
+            status: "posted",
+            entryDate: { $gte: startDate, $lte: endDate },
+            $or: [
+              ...(expenseIds.length
+                ? [{ referenceType: "expense", referenceId: { $in: expenseIds } }]
+                : []),
+              ...(linkedJournalIds.length
+                ? [{ id: { $in: linkedJournalIds } }]
+                : []),
+            ],
+          }).select("id referenceId").lean()
+        : [];
+      const journalizedExpenseIds = new Set(
+        linkedEntries.map((entry: any) => String(entry.referenceId)).filter(Boolean),
+      );
+      const postedJournalIds = new Set(linkedEntries.map((entry: any) => String(entry.id)));
       const categoryLabels: Record<string, string> = {
+        inventory: "المخزون والمواد الخام",
         operating: "مصروفات تشغيلية",
         salary: "رواتب وأجور",
         salaries: "رواتب وأجور",
@@ -869,16 +902,25 @@ export class ErpAccountingService {
         utilities: "مرافق",
         marketing: "تسويق",
         maintenance: "صيانة",
+        supplies: "المستلزمات",
         other: "مصروفات أخرى",
       };
+      let unjournalizedExpenseCount = 0;
       for (const expense of erpExpenses) {
+        if (
+          journalizedExpenseIds.has(String(expense.id)) ||
+          (expense.journalEntryId && postedJournalIds.has(String(expense.journalEntryId)))
+        ) {
+          continue;
+        }
         const category = expense.category || "operating";
         const label = categoryLabels[category] || category;
         expenseAccounts[label] = (expenseAccounts[label] || 0) +
           (Number(expense.totalAmount) || Number(expense.amount) || 0);
+        unjournalizedExpenseCount++;
       }
       totalExpenses = Object.values(expenseAccounts).reduce((sum, amount) => sum + amount, 0);
-      if (erpExpenses.length && source === "journal") source = "hybrid";
+      if (unjournalizedExpenseCount > 0 && source !== "orders") source = "hybrid";
     }
 
     const grossProfit = totalRevenue - cogs;
@@ -901,7 +943,8 @@ export class ErpAccountingService {
    */
   static async getBalanceSheet(
     tenantId: string,
-    asOfDate: Date
+    asOfDate: Date,
+    branchId?: string,
   ): Promise<{
     assets: Array<{ accountName: string; balance: number }>;
     totalAssets: number;
@@ -911,13 +954,14 @@ export class ErpAccountingService {
     totalEquity: number;
   }> {
     const accounts = await AccountModel.find({ tenantId, isActive: 1, level: { $gte: 3 } });
+    const balances = await this.getAccountBalancesAsOf(tenantId, accounts, asOfDate, branchId);
 
     const assets: Array<{ accountName: string; balance: number }> = [];
     const liabilities: Array<{ accountName: string; balance: number }> = [];
     const equity: Array<{ accountName: string; balance: number }> = [];
 
     for (const account of accounts) {
-      const balance = account.currentBalance || 0;
+      const balance = balances.get(account.id) || 0;
       if (balance === 0) continue;
 
       const item = { accountName: account.nameAr, balance };
@@ -1090,35 +1134,47 @@ export class ErpAccountingService {
       status: { $ne: "cancelled" },
     };
     if (branchId) orderQuery.branchId = branchId;
-    const recentOrders = await OrderModel.find(orderQuery).lean();
-    const orderRevenue = recentOrders.reduce((sum: number, o: any) => sum + (o.totalAmount || 0), 0);
-    const orderCount = recentOrders.length;
-
-    // Use journal entries if available, otherwise fall back to real order data
-    const hasJournalData = income.totalRevenue > 0;
-    const totalRevenue = hasJournalData ? income.totalRevenue : orderRevenue;
+    orderQuery.status = { $in: ["completed", "delivered", "paid", "payment_confirmed", "refunded"] };
+    const orderCount = await OrderModel.countDocuments(orderQuery);
+    const totalRevenue = income.totalRevenue;
     const totalExpenses = income.totalExpenses + income.cogs;
-    const netIncome = hasJournalData ? income.netIncome : (orderRevenue - totalExpenses);
+    const netIncome = income.netIncome;
 
-    const [cashAccount, arAccount, apAccount, pendingExpenses, invoiceCount] = await Promise.all([
-      AccountModel.findOne({ tenantId, accountNumber: "1111" }),
-      AccountModel.findOne({ tenantId, accountNumber: "1120" }),
-      AccountModel.findOne({ tenantId, accountNumber: "2110" }),
-      ExpenseErpModel.countDocuments({ tenantId, status: "pending_approval" }),
-      InvoiceModel.countDocuments(branchId ? { tenantId, branchId } : { tenantId }),
+    const pendingExpenseQuery: any = {
+      tenantId,
+      status: "pending_approval",
+      expenseDate: { $gte: start, $lte: end },
+    };
+    const invoiceQuery: any = {
+      tenantId,
+      invoiceDate: { $gte: start, $lte: end },
+    };
+    if (branchId) {
+      pendingExpenseQuery.branchId = branchId;
+      invoiceQuery.branchId = branchId;
+    }
+    const [summaryAccounts, pendingExpenses, invoiceCount] = await Promise.all([
+      AccountModel.find({ tenantId, accountNumber: { $in: ["1111", "1120", "2110"] } }),
+      ExpenseErpModel.countDocuments(pendingExpenseQuery),
+      InvoiceModel.countDocuments(invoiceQuery),
     ]);
+    const accountBalances = await this.getAccountBalancesAsOf(tenantId, summaryAccounts, end, branchId);
+    const balanceFor = (accountNumber: string) => {
+      const account = summaryAccounts.find((item) => item.accountNumber === accountNumber);
+      return account ? accountBalances.get(account.id) || 0 : 0;
+    };
 
     return {
       totalRevenue,
       totalExpenses,
       netIncome,
-      accountsReceivable: arAccount?.currentBalance || 0,
-      accountsPayable: apAccount?.currentBalance || 0,
-      cashBalance: cashAccount?.currentBalance || 0,
+      accountsReceivable: balanceFor("1120"),
+      accountsPayable: balanceFor("2110"),
+      cashBalance: balanceFor("1111"),
       pendingExpenses,
       invoiceCount,
       orderCount,
-      usingOrderData: !hasJournalData,
+      usingOrderData: income.source === "orders",
     };
   }
 }

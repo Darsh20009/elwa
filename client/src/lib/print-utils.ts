@@ -450,6 +450,7 @@ function _printAndroid(fullHtml: string): Promise<void> {
 }
 
 function _buildFullDoc(html: string, paperWidth: string): string {
+  const pageSize = paperWidth === "A4" ? "A4" : `${paperWidth} auto`;
   // The iframe document gets its own viewport meta so Android treats it
   // as a device-width document and does NOT resize the parent page's viewport.
   return `<!DOCTYPE html><html lang="ar" dir="rtl">
@@ -457,7 +458,7 @@ function _buildFullDoc(html: string, paperWidth: string): string {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
   <style>
-    @page { size: ${paperWidth} auto; margin: 0; }
+     @page { size: ${pageSize}; margin: 0; }
     * { box-sizing: border-box; }
     body { margin: 0; padding: 4px; font-family: ${PRINT_FONT_STACK}; direction: rtl; color: #000; background: #fff; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     .no-print { display: none !important; }

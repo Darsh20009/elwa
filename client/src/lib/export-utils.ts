@@ -20,18 +20,24 @@ export function sanitizeForExport(data: any[]): any[] {
   });
 }
 
+export function serializeCsv(data: any[]): string {
+  const cleanData = sanitizeForExport(data || []);
+  if (cleanData.length === 0) return "";
+  const headers = Object.keys(cleanData[0]);
+  const quote = (value: unknown) => `"${String(value ?? "").replace(/"/g, '""')}"`;
+  return "\uFEFF" + [
+    headers.map(quote).join(","),
+    ...cleanData.map((row) => headers.map((header) => quote(row[header])).join(",")),
+  ].join("\r\n");
+}
+
 export function exportToCSV(data: any[], filename: string) {
   if (!data || data.length === 0) {
     console.error("No data to export");
     return;
   }
 
-  const cleanData = sanitizeForExport(data);
-  const headers = Object.keys(cleanData[0]);
-  const csvContent = [
-    headers.join(","),
-    ...cleanData.map((row) => headers.map((header) => `"${row[header] || ""}"`).join(",")),
-  ].join("\n");
+  const csvContent = serializeCsv(data);
 
   const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
   const link = document.createElement("a");

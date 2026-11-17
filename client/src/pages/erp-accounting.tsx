@@ -1,5 +1,6 @@
 import { useTranslate, tc } from "@/lib/useTranslate";
 import { PlanGate } from "@/components/plan-gate";
+import { printHtmlInPage } from "@/lib/print-utils";
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
@@ -62,6 +63,7 @@ import {
   Clock,
   XCircle,
   Download,
+  Printer,
   BookOpen,
   Users,
   Scale,
@@ -71,6 +73,7 @@ import { useLocation } from "wouter";
 import { format, subDays, startOfMonth, endOfMonth, isValid } from "date-fns";
 import { ar } from "date-fns/locale";
 import SarIcon from "@/components/sar-icon";
+import { exportToCSV } from "@/lib/export-utils";
 import {
   BarChart,
   Bar,
@@ -120,6 +123,11 @@ interface DashboardSummary {
   usingOrderData?: boolean;
 }
 
+interface Branch {
+  id: string;
+  nameAr: string;
+}
+
 interface TrialBalanceItem {
   accountNumber: string;
   accountName: string;
@@ -136,6 +144,7 @@ interface IncomeStatement {
   cogs: number;
   grossProfit: number;
   netIncome: number;
+  source?: "journal" | "orders" | "hybrid";
 }
 
 interface Invoice {
@@ -305,6 +314,13 @@ function flattenAccounts(accounts: Account[]): Account[] {
   return result;
 }
 
+function toDateInputValue(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 function AccountTreeNode({ account, level = 0 }: { account: Account; level?: number }) {
   const [isOpen, setIsOpen] = useState(level < 2);
   const hasChildren = account.children && account.children.length > 0;
@@ -391,6 +407,11 @@ export default function ErpAccountingPage() {
   const tc = useTranslate();
   const [, setLocation] = useLocation();
   const [activeTab, setActiveTab] = useState("dashboard");
+  const [reportStartDate, setReportStartDate] = useState(() =>
+    toDateInputValue(new Date(new Date().getFullYear(), new Date().getMonth(), 1)),
+  );
+  const [reportEndDate, setReportEndDate] = useState(() => toDateInputValue(new Date()));
+  const [reportBranchId, setReportBranchId] = useState("all");
   const [showAddAccountDialog, setShowAddAccountDialog] = useState(false);
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
   const [showInvoiceDialog, setShowInvoiceDialog] = useState(false);
@@ -410,20 +431,45 @@ export default function ErpAccountingPage() {
   const [newExpense, setNewExpense] = useState({ description: "", amount: 0, category: "operating", accountId: "", paymentMethod: "cash" });
   const [newVendor, setNewVendor] = useState({ nameAr: "", nameEn: "", phone: "", email: "", taxNumber: "" });
 
-  const { data: dashboardData, isLoading: dashboardLoading } = useQuery<{ success: boolean; summary: DashboardSummary }>({
-    queryKey: ["/api/erp/dashboard"],
+  const { data: branches = [] } = useQuery<Branch[]>({
+    queryKey: ["/api/branches"],
+  });
+
+  const { data: dashboardData, isLoading: dashboardLoading, isError: dashboardError } = useQuery<{ success: boolean; summary: DashboardSummary }>({
+    queryKey: ["/api/erp/dashboard", reportStartDate, reportEndDate, reportBranchId],
+    queryFn: async () => {
+      const params = new URLSearchParams({ startDate: reportStartDate, endDate: reportEndDate });
+      if (reportBranchId !== "all") params.set("branchId", reportBranchId);
+      const response = await apiRequest("GET", `/api/erp/dashboard?${params}`);
+      return response.json();
+    },
+    enabled: activeTab === "dashboard",
   });
 
   const { data: accountsData, isLoading: accountsLoading } = useQuery<{ success: boolean; tree: Account[] }>({
     queryKey: ["/api/erp/accounts/tree"],
   });
 
-  const { data: trialBalanceData, isLoading: trialBalanceLoading } = useQuery<{ success: boolean; trialBalance: TrialBalanceItem[] }>({
-    queryKey: ["/api/erp/reports/trial-balance"],
+  const { data: trialBalanceData, isLoading: trialBalanceLoading, isError: trialBalanceError } = useQuery<{ success: boolean; trialBalance: TrialBalanceItem[] }>({
+    queryKey: ["/api/erp/reports/trial-balance", reportEndDate, reportBranchId],
+    queryFn: async () => {
+      const params = new URLSearchParams({ endDate: reportEndDate });
+      if (reportBranchId !== "all") params.set("branchId", reportBranchId);
+      const response = await apiRequest("GET", `/api/erp/reports/trial-balance?${params}`);
+      return response.json();
+    },
+    enabled: activeTab === "trial-balance",
   });
 
-  const { data: incomeStatementData, isLoading: incomeLoading } = useQuery<{ success: boolean; incomeStatement: IncomeStatement }>({
-    queryKey: ["/api/erp/reports/income-statement"],
+  const { data: incomeStatementData, isLoading: incomeLoading, isError: incomeError } = useQuery<{ success: boolean; incomeStatement: IncomeStatement }>({
+    queryKey: ["/api/erp/reports/income-statement", reportStartDate, reportEndDate, reportBranchId],
+    queryFn: async () => {
+      const params = new URLSearchParams({ startDate: reportStartDate, endDate: reportEndDate });
+      if (reportBranchId !== "all") params.set("branchId", reportBranchId);
+      const response = await apiRequest("GET", `/api/erp/reports/income-statement?${params}`);
+      return response.json();
+    },
+    enabled: activeTab === "income",
   });
 
   const { data: invoicesData, isLoading: invoicesLoading } = useQuery<{ success: boolean; invoices: Invoice[] }>({
@@ -442,8 +488,15 @@ export default function ErpAccountingPage() {
     queryKey: ["/api/erp/vendors"],
   });
 
-  const { data: balanceSheetData, isLoading: balanceSheetLoading } = useQuery<{ success: boolean; balanceSheet: BalanceSheet }>({
-    queryKey: ["/api/erp/reports/balance-sheet"],
+  const { data: balanceSheetData, isLoading: balanceSheetLoading, isError: balanceSheetError } = useQuery<{ success: boolean; balanceSheet: BalanceSheet }>({
+    queryKey: ["/api/erp/reports/balance-sheet", reportEndDate, reportBranchId],
+    queryFn: async () => {
+      const params = new URLSearchParams({ asOfDate: reportEndDate });
+      if (reportBranchId !== "all") params.set("branchId", reportBranchId);
+      const response = await apiRequest("GET", `/api/erp/reports/balance-sheet?${params}`);
+      return response.json();
+    },
+    enabled: activeTab === "balance-sheet",
   });
 
   const initializeAccountsMutation = useMutation({
@@ -493,6 +546,9 @@ export default function ErpAccountingPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/erp/journal-entries"] });
       queryClient.invalidateQueries({ queryKey: ["/api/erp/accounts/tree"] });
       queryClient.invalidateQueries({ queryKey: ["/api/erp/dashboard"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/erp/reports/trial-balance"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/erp/reports/income-statement"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/erp/reports/balance-sheet"] });
       toast({ title: tc("تم ترحيل القيد بنجاح", "Journal entry posted successfully") });
     },
     onError: (error: any) => { toast({ title: error.message || tc("فشل في ترحيل القيد", "Failed to post journal entry"), variant: "destructive" }); },
@@ -503,6 +559,7 @@ export default function ErpAccountingPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/erp/expenses"] });
       queryClient.invalidateQueries({ queryKey: ["/api/erp/dashboard"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/erp/reports/income-statement"] });
       setShowAddExpenseDialog(false);
       setNewExpense({ description: "", amount: 0, category: "operating", accountId: "", paymentMethod: "cash" });
       toast({ title: tc("تم إضافة المصروف بنجاح", "Expense added successfully") });
@@ -515,6 +572,7 @@ export default function ErpAccountingPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/erp/expenses"] });
       queryClient.invalidateQueries({ queryKey: ["/api/erp/dashboard"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/erp/reports/income-statement"] });
       toast({ title: tc("تم اعتماد المصروف بنجاح", "Expense approved successfully") });
     },
     onError: (error: any) => { toast({ title: error.message || tc("فشل في اعتماد المصروف", "Failed to approve expense"), variant: "destructive" }); },
@@ -544,6 +602,123 @@ export default function ErpAccountingPage() {
 
   const totalDebit = trialBalance.reduce((sum, item) => sum + item.debitBalance, 0);
   const totalCredit = trialBalance.reduce((sum, item) => sum + item.creditBalance, 0);
+  const selectedBranchName = reportBranchId === "all"
+    ? "جميع الفروع"
+    : branches.find((branch) => branch.id === reportBranchId)?.nameAr || reportBranchId;
+  const reportPeriodLabel = `من ${reportStartDate} إلى ${reportEndDate} — ${selectedBranchName}`;
+  const trialBalanceRows = [
+    ...trialBalance.map((item) => ({
+      "رقم الحساب": item.accountNumber,
+      "اسم الحساب": item.accountName,
+      "نوع الحساب": accountTypeLabels[item.accountType] || item.accountType,
+      "مدين": item.debitBalance,
+      "دائن": item.creditBalance,
+    })),
+    {
+      "رقم الحساب": "",
+      "اسم الحساب": "الإجمالي",
+      "نوع الحساب": "",
+      "مدين": totalDebit,
+      "دائن": totalCredit,
+    },
+  ];
+  const incomeStatementRows = incomeStatement ? [
+    ...incomeStatement.revenue.map((item) => ({
+      "البند": "إيراد",
+      "الحساب": item.accountName,
+      "المبلغ": item.amount,
+    })),
+    { "البند": "الإجمالي", "الحساب": "إجمالي الإيرادات", "المبلغ": incomeStatement.totalRevenue },
+    { "البند": "تكلفة", "الحساب": "تكلفة البضاعة المباعة", "المبلغ": incomeStatement.cogs },
+    ...incomeStatement.expenses.map((item) => ({
+      "البند": "مصروف تشغيلي",
+      "الحساب": item.accountName,
+      "المبلغ": item.amount,
+    })),
+    {
+      "البند": "الإجمالي",
+      "الحساب": "إجمالي المصروفات",
+      "المبلغ": incomeStatement.totalExpenses + incomeStatement.cogs,
+    },
+    { "البند": "الربح", "الحساب": "إجمالي الربح", "المبلغ": incomeStatement.grossProfit },
+    { "البند": "الربح", "الحساب": "صافي الدخل", "المبلغ": incomeStatement.netIncome },
+  ] : [];
+  const hasIncomeStatementData = Boolean(
+    incomeStatement && (
+      incomeStatement.revenue.length ||
+      incomeStatement.expenses.length ||
+      incomeStatement.totalRevenue ||
+      incomeStatement.totalExpenses ||
+      incomeStatement.cogs
+    ),
+  );
+  const balanceSheetRows = balanceSheet ? [
+    ...balanceSheet.assets.map((item) => ({ "التصنيف": "أصول", "الحساب": item.accountName, "الرصيد": item.balance })),
+    { "التصنيف": "إجمالي", "الحساب": "إجمالي الأصول", "الرصيد": balanceSheet.totalAssets },
+    ...balanceSheet.liabilities.map((item) => ({ "التصنيف": "خصوم", "الحساب": item.accountName, "الرصيد": item.balance })),
+    { "التصنيف": "إجمالي", "الحساب": "إجمالي الخصوم", "الرصيد": balanceSheet.totalLiabilities },
+    ...balanceSheet.equity.map((item) => ({ "التصنيف": "حقوق ملكية", "الحساب": item.accountName, "الرصيد": item.balance })),
+    { "التصنيف": "إجمالي", "الحساب": "إجمالي حقوق الملكية", "الرصيد": balanceSheet.totalEquity },
+  ] : [];
+  const summaryReportRows = summary ? [
+    { "البند": "الإيرادات بعد استبعاد الضريبة", "القيمة": summary.totalRevenue },
+    { "البند": "إجمالي المصروفات مع تكلفة البضاعة", "القيمة": summary.totalExpenses },
+    { "البند": "صافي الدخل", "القيمة": summary.netIncome },
+    { "البند": "الصندوق", "القيمة": summary.cashBalance },
+    { "البند": "الذمم المدينة", "القيمة": summary.accountsReceivable },
+    { "البند": "الذمم الدائنة", "القيمة": summary.accountsPayable },
+    { "البند": "عدد الطلبات", "القيمة": summary.orderCount },
+    { "البند": "عدد الفواتير", "القيمة": summary.invoiceCount },
+  ] : [];
+  const hasBalanceSheetData = Boolean(
+    balanceSheet && (
+      balanceSheet.assets.length ||
+      balanceSheet.liabilities.length ||
+      balanceSheet.equity.length ||
+      balanceSheet.totalAssets ||
+      balanceSheet.totalLiabilities ||
+      balanceSheet.totalEquity
+    ),
+  );
+
+  const escapeHtml = (value: unknown) => String(value ?? "—").replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  }[character]!));
+
+  const exportFinancialReport = (title: string, rows: Array<Record<string, unknown>>, slug: string) => {
+    if (!rows.length) {
+      toast({ title: "لا توجد بيانات لتصديرها", variant: "destructive" });
+      return;
+    }
+    exportToCSV(rows, `${slug}_${reportStartDate}_${reportEndDate}.csv`);
+    toast({ title: `تم تصدير ${title}` });
+  };
+
+  const printFinancialReport = (title: string, rows: Array<Record<string, unknown>>) => {
+    if (!rows.length) {
+      toast({ title: "لا توجد بيانات للطباعة", variant: "destructive" });
+      return;
+    }
+    const headers = Object.keys(rows[0]);
+    const isAsOfReport = title === "ميزان المراجعة" || title === "الميزانية العمومية";
+    const reportDateText = isAsOfReport
+      ? `حتى تاريخ: ${reportEndDate}`
+      : `الفترة: ${reportStartDate} — ${reportEndDate}`;
+    const html = `
+      <main dir="rtl" lang="ar" style="font-family:Arial,sans-serif;padding:20px;color:#111">
+        <h1 style="text-align:center">${escapeHtml(title)}</h1>
+        <p style="text-align:center">${escapeHtml(`${reportDateText} — ${selectedBranchName}`)}</p>
+        <table style="width:100%;border-collapse:collapse">
+          <thead><tr>${headers.map((header) => `<th style="border:1px solid #999;padding:8px;text-align:right;background:#eee">${escapeHtml(header)}</th>`).join("")}</tr></thead>
+          <tbody>${rows.map((row) => `<tr>${headers.map((header) => `<td style="border:1px solid #999;padding:8px;text-align:right">${escapeHtml(row[header])}</td>`).join("")}</tr>`).join("")}</tbody>
+        </table>
+      </main>`;
+    printHtmlInPage(html, "A4");
+  };
 
   return (
     <PlanGate feature="erpIntegration">
@@ -587,10 +762,68 @@ export default function ErpAccountingPage() {
         </div>
 
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
+          {["dashboard", "trial-balance", "income", "balance-sheet"].includes(activeTab) && (
+            <Card className="border-primary/15">
+              <CardContent className="grid grid-cols-1 gap-4 p-4 md:grid-cols-3">
+                <div className="space-y-2">
+                  <Label htmlFor="report-start-date">من تاريخ</Label>
+                  <Input
+                    id="report-start-date"
+                    type="date"
+                    value={reportStartDate}
+                    max={reportEndDate}
+                    onChange={(event) => setReportStartDate(event.target.value)}
+                    data-testid="input-report-start-date"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="report-end-date">إلى تاريخ</Label>
+                  <Input
+                    id="report-end-date"
+                    type="date"
+                    value={reportEndDate}
+                    min={reportStartDate}
+                    onChange={(event) => setReportEndDate(event.target.value)}
+                    data-testid="input-report-end-date"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>الفرع</Label>
+                  <Select value={reportBranchId} onValueChange={setReportBranchId}>
+                    <SelectTrigger data-testid="select-report-branch">
+                      <SelectValue placeholder="اختر الفرع" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">جميع الفروع</SelectItem>
+                      {branches.map((branch) => (
+                        <SelectItem key={branch.id} value={branch.id}>{branch.nameAr}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <p className="text-xs text-muted-foreground md:col-span-3">
+                  قائمة الدخل للفترة المحددة، والأرصدة وميزان المراجعة حتى نهاية تاريخ التقرير.
+                  عند اختيار فرع، لا تُنسب القيود والأرصدة الافتتاحية غير المخصصة تلقائياً إلى ذلك الفرع.
+                </p>
+              </CardContent>
+            </Card>
+          )}
           <TabsList className="flex flex-wrap gap-1 h-auto p-1">
             <TabsTrigger value="dashboard" data-testid="tab-dashboard">
               <BarChart3 className="h-4 w-4 ml-2" />
               لوحة التحكم
+            </TabsTrigger>
+            <TabsTrigger value="income" data-testid="tab-income">
+              <TrendingUp className="h-4 w-4 ml-2" />
+              قائمة الدخل
+            </TabsTrigger>
+            <TabsTrigger value="trial-balance" data-testid="tab-trial-balance">
+              <FileText className="h-4 w-4 ml-2" />
+              ميزان المراجعة
+            </TabsTrigger>
+            <TabsTrigger value="balance-sheet" data-testid="tab-balance-sheet">
+              <Scale className="h-4 w-4 ml-2" />
+              الميزانية العمومية
             </TabsTrigger>
             <TabsTrigger value="invoices" data-testid="tab-invoices">
               <Receipt className="h-4 w-4 ml-2" />
@@ -599,14 +832,6 @@ export default function ErpAccountingPage() {
             <TabsTrigger value="accounts" data-testid="tab-accounts">
               <Building2 className="h-4 w-4 ml-2" />
               دليل الحسابات
-            </TabsTrigger>
-            <TabsTrigger value="trial-balance" data-testid="tab-trial-balance">
-              <FileText className="h-4 w-4 ml-2" />
-              ميزان المراجعة
-            </TabsTrigger>
-            <TabsTrigger value="income" data-testid="tab-income">
-              <TrendingUp className="h-4 w-4 ml-2" />
-              قائمة الدخل
             </TabsTrigger>
             <TabsTrigger value="journal-entries" data-testid="tab-journal-entries">
               <BookOpen className="h-4 w-4 ml-2" />
@@ -620,10 +845,6 @@ export default function ErpAccountingPage() {
               <Users className="h-4 w-4 ml-2" />
               الموردين
             </TabsTrigger>
-            <TabsTrigger value="balance-sheet" data-testid="tab-balance-sheet">
-              <Scale className="h-4 w-4 ml-2" />
-              الميزانية
-            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="dashboard" className="space-y-6">
@@ -631,8 +852,39 @@ export default function ErpAccountingPage() {
               <div className="flex items-center justify-center py-12">
                 <Loader2 className="h-8 w-8 animate-spin text-primary" />
               </div>
+            ) : dashboardError ? (
+              <Card>
+                <CardContent className="p-8 text-center">
+                  <h3 className="font-semibold">تعذّر تحميل ملخص الحسابات</h3>
+                  <p className="mt-2 text-sm text-muted-foreground">تحقق من الاتصال ثم أعد المحاولة.</p>
+                  <Button className="mt-4" variant="outline" onClick={() => queryClient.invalidateQueries({ queryKey: ["/api/erp/dashboard"] })}>
+                    إعادة المحاولة
+                  </Button>
+                </CardContent>
+              </Card>
             ) : summary ? (
               <>
+                <div className="flex flex-wrap justify-end gap-2">
+                  <Button
+                    variant="outline"
+                    onClick={() => exportFinancialReport("ملخص الحسابات", summaryReportRows, "ملخص-الحسابات")}
+                    data-testid="button-export-financial-summary"
+                  >
+                    <Download className="h-4 w-4 ml-2" /> تصدير CSV
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={() => printFinancialReport("ملخص الحسابات", summaryReportRows)}
+                    data-testid="button-print-financial-summary"
+                  >
+                    <Printer className="h-4 w-4 ml-2" /> طباعة
+                  </Button>
+                </div>
+                {summary.orderCount === 0 && summary.totalRevenue === 0 && summary.totalExpenses === 0 && (
+                  <div className="rounded-lg border border-dashed p-4 text-center text-sm text-muted-foreground">
+                    لا توجد حركات مالية للفترة والفرع المحددين.
+                  </div>
+                )}
                 {summary.usingOrderData && (
                   <div className="flex items-center gap-3 p-4 rounded-lg bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 text-blue-800 dark:text-blue-200">
                     <BookOpen className="h-5 w-5 shrink-0" />
@@ -993,16 +1245,34 @@ export default function ErpAccountingPage() {
           <TabsContent value="trial-balance" className="space-y-4">
             <div className="flex items-center justify-between">
               <h2 className="text-xl font-semibold">{tc("ميزان المراجعة", "Trial Balance")}</h2>
-              <Button variant="outline" data-testid="button-export-trial-balance">
-                <Download className="h-4 w-4 ml-2" />
-                تصدير
-              </Button>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() => exportFinancialReport("ميزان المراجعة", trialBalanceRows, "ميزان-المراجعة")}
+                  disabled={!trialBalance.length}
+                  data-testid="button-export-trial-balance"
+                >
+                  <Download className="h-4 w-4 ml-2" /> تصدير CSV
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => printFinancialReport("ميزان المراجعة", trialBalanceRows)}
+                  disabled={!trialBalance.length}
+                  data-testid="button-print-trial-balance"
+                >
+                  <Printer className="h-4 w-4 ml-2" /> طباعة
+                </Button>
+              </div>
             </div>
 
             <Card className="bg-card border-border/50">
               {trialBalanceLoading ? (
                 <CardContent className="p-12 text-center">
                   <Loader2 className="h-8 w-8 animate-spin mx-auto text-primary" />
+                </CardContent>
+              ) : trialBalanceError ? (
+                <CardContent className="p-12 text-center text-destructive">
+                  تعذّر تحميل ميزان المراجعة. تحقق من الاتصال ثم أعد المحاولة.
                 </CardContent>
               ) : trialBalance.length > 0 ? (
                 <Table>
@@ -1044,7 +1314,7 @@ export default function ErpAccountingPage() {
                 <CardContent className="p-12 text-center">
                   <FileText className="h-16 w-16 mx-auto text-muted-foreground/50 mb-4" />
                   <h3 className="text-lg font-semibold mb-2">لا توجد بيانات</h3>
-                  <p className="text-muted-foreground">يرجى تهيئة دليل الحسابات وإضافة قيود</p>
+                  <p className="text-muted-foreground">لا توجد أرصدة أو قيود للفترة والفرع المحددين.</p>
                 </CardContent>
               )}
             </Card>
@@ -1053,18 +1323,48 @@ export default function ErpAccountingPage() {
           <TabsContent value="income" className="space-y-4">
             <div className="flex items-center justify-between">
               <h2 className="text-xl font-semibold">{tc("قائمة الدخل", "Income Statement")}</h2>
-              <Button variant="outline" data-testid="button-export-income">
-                <Download className="h-4 w-4 ml-2" />
-                تصدير
-              </Button>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() => exportFinancialReport("قائمة الدخل", incomeStatementRows, "قائمة-الدخل")}
+                  disabled={!hasIncomeStatementData}
+                  data-testid="button-export-income"
+                >
+                  <Download className="h-4 w-4 ml-2" /> تصدير CSV
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => printFinancialReport("قائمة الدخل", incomeStatementRows)}
+                  disabled={!hasIncomeStatementData}
+                  data-testid="button-print-income"
+                >
+                  <Printer className="h-4 w-4 ml-2" /> طباعة
+                </Button>
+              </div>
             </div>
 
             {incomeLoading ? (
               <div className="flex items-center justify-center py-12">
                 <Loader2 className="h-8 w-8 animate-spin text-primary" />
               </div>
-            ) : incomeStatement ? (
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            ) : incomeError ? (
+              <Card>
+                <CardContent className="p-12 text-center text-destructive">
+                  تعذّر تحميل قائمة الدخل. تحقق من الاتصال ثم أعد المحاولة.
+                </CardContent>
+              </Card>
+            ) : incomeStatement && hasIncomeStatementData ? (
+              <div className="space-y-4">
+                {incomeStatement.source && (
+                  <p className="text-sm text-muted-foreground">
+                    مصدر الأرقام: {incomeStatement.source === "orders"
+                      ? "الطلبات الفعلية (لا توجد قيود إيرادات لهذه الفترة)"
+                      : incomeStatement.source === "hybrid"
+                        ? "القيود المحاسبية مع المصروفات المعتمدة غير المرحلة"
+                        : "القيود المحاسبية"}
+                  </p>
+                )}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <Card className="bg-card border-border/50">
                   <CardHeader>
                     <CardTitle className="text-lg flex items-center gap-2">
@@ -1135,13 +1435,14 @@ export default function ErpAccountingPage() {
                     </div>
                   </CardContent>
                 </Card>
+                </div>
               </div>
             ) : (
               <Card className="bg-card border-border/50">
                 <CardContent className="p-12 text-center">
                   <TrendingUp className="h-16 w-16 mx-auto text-muted-foreground/50 mb-4" />
-                  <h3 className="text-lg font-semibold mb-2">لا توجد بيانات</h3>
-                  <p className="text-muted-foreground">يرجى تهيئة دليل الحسابات وإضافة قيود</p>
+                  <h3 className="text-lg font-semibold mb-2">لا توجد حركات مالية</h3>
+                  <p className="text-muted-foreground">لا توجد إيرادات أو مصروفات للفترة والفرع المحددين.</p>
                 </CardContent>
               </Card>
             )}
@@ -1347,17 +1648,37 @@ export default function ErpAccountingPage() {
           <TabsContent value="balance-sheet" className="space-y-4">
             <div className="flex items-center justify-between">
               <h2 className="text-xl font-semibold">الميزانية العمومية</h2>
-              <Button variant="outline" data-testid="button-export-balance-sheet">
-                <Download className="h-4 w-4 ml-2" />
-                تصدير
-              </Button>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() => exportFinancialReport("الميزانية العمومية", balanceSheetRows, "الميزانية-العمومية")}
+                  disabled={!hasBalanceSheetData}
+                  data-testid="button-export-balance-sheet"
+                >
+                  <Download className="h-4 w-4 ml-2" /> تصدير CSV
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => printFinancialReport("الميزانية العمومية", balanceSheetRows)}
+                  disabled={!hasBalanceSheetData}
+                  data-testid="button-print-balance-sheet"
+                >
+                  <Printer className="h-4 w-4 ml-2" /> طباعة
+                </Button>
+              </div>
             </div>
 
             {balanceSheetLoading ? (
               <div className="flex items-center justify-center py-12">
                 <Loader2 className="h-8 w-8 animate-spin text-primary" />
               </div>
-            ) : balanceSheet ? (
+            ) : balanceSheetError ? (
+              <Card>
+                <CardContent className="p-12 text-center text-destructive">
+                  تعذّر تحميل الميزانية العمومية. تحقق من الاتصال ثم أعد المحاولة.
+                </CardContent>
+              </Card>
+            ) : balanceSheet && hasBalanceSheetData ? (
               <div className="space-y-6">
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                   <Card className="bg-card border-border/50">
@@ -1454,7 +1775,7 @@ export default function ErpAccountingPage() {
                 <CardContent className="p-12 text-center">
                   <Scale className="h-16 w-16 mx-auto text-muted-foreground/50 mb-4" />
                   <h3 className="text-lg font-semibold mb-2">لا توجد بيانات</h3>
-                  <p className="text-muted-foreground">يرجى تهيئة دليل الحسابات وإضافة قيود</p>
+                  <p className="text-muted-foreground">لا توجد أرصدة مسجلة حتى التاريخ المحدد لهذا الفرع.</p>
                 </CardContent>
               </Card>
             )}

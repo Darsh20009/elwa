@@ -132,6 +132,21 @@ function getSaudiEndOfDay(date?: Date): Date {
   const start = getSaudiStartOfDay(date);
   return new Date(start.getTime() + 24 * 60 * 60 * 1000 - 1);
 }
+
+function parseFinancialReportDate(value: unknown, boundary: "start" | "end"): Date | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return boundary === "start" ? getSaudiStartOfDay(parsed) : getSaudiEndOfDay(parsed);
+}
+
+function getFinancialReportBranchId(req: AuthRequest, requestedBranchId?: string): string | undefined {
+  const role = req.employee?.role;
+  if (role === "owner" || role === "admin") {
+    return requestedBranchId && requestedBranchId !== "all" ? requestedBranchId : undefined;
+  }
+  return req.employee?.branchId || undefined;
+}
 // Returns a custom 24-hour business-day window starting at `dayStartHour` (Saudi time) on the given date.
 // e.g. dayStartHour=6 means the business day runs 6 AM → 6 AM next day in Riyadh time.
 function getBusinessDayBoundaries(date?: Date, dayStartHour: number = 0): { start: Date; end: Date } {
@@ -21175,8 +21190,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/erp/reports/trial-balance", requireAuth, requireManager, async (req: AuthRequest, res) => {
     try {
       const tenantId = getTenantIdFromRequest(req) || req.query.tenantId as string || process.env.TENANT_ID!;
-      const endDate = req.query.endDate ? new Date(req.query.endDate as string) : new Date();
-      const trialBalance = await ErpAccountingService.getTrialBalance(tenantId, endDate);
+      const endDate = req.query.endDate
+        ? parseFinancialReportDate(req.query.endDate, "end")
+        : getSaudiEndOfDay();
+      if (!endDate) return res.status(400).json({ error: "تاريخ التقرير غير صالح" });
+      const branchId = getFinancialReportBranchId(req, req.query.branchId as string | undefined);
+      const trialBalance = await ErpAccountingService.getTrialBalance(tenantId, endDate, branchId);
       res.json({ success: true, trialBalance });
     } catch (error: any) {
       res.status(500).json({ error: error.message || "Failed to fetch trial balance" });
@@ -21187,9 +21206,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/erp/reports/income-statement", requireAuth, requireManager, async (req: AuthRequest, res) => {
     try {
       const tenantId = getTenantIdFromRequest(req) || req.query.tenantId as string || process.env.TENANT_ID!;
-      const startDate = req.query.startDate ? new Date(req.query.startDate as string) : new Date(new Date().getFullYear(), 0, 1);
-      const endDate = req.query.endDate ? new Date(req.query.endDate as string) : new Date();
-      const branchId = req.query.branchId as string;
+      const startDate = req.query.startDate
+        ? parseFinancialReportDate(req.query.startDate, "start")
+        : getSaudiStartOfDay(new Date(new Date().getFullYear(), 0, 1));
+      const endDate = req.query.endDate
+        ? parseFinancialReportDate(req.query.endDate, "end")
+        : getSaudiEndOfDay();
+      if (!startDate || !endDate) return res.status(400).json({ error: "تواريخ التقرير غير صالحة" });
+      if (startDate > endDate) return res.status(400).json({ error: "تاريخ البداية يجب أن يسبق تاريخ النهاية" });
+      const branchId = getFinancialReportBranchId(req, req.query.branchId as string | undefined);
       const incomeStatement = await ErpAccountingService.getIncomeStatement(tenantId, startDate, endDate, branchId);
       res.json({ success: true, incomeStatement });
     } catch (error: any) {
@@ -21201,8 +21226,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/erp/reports/balance-sheet", requireAuth, requireManager, async (req: AuthRequest, res) => {
     try {
       const tenantId = getTenantIdFromRequest(req) || req.query.tenantId as string || process.env.TENANT_ID!;
-      const asOfDate = req.query.asOfDate ? new Date(req.query.asOfDate as string) : new Date();
-      const balanceSheet = await ErpAccountingService.getBalanceSheet(tenantId, asOfDate);
+      const asOfDate = req.query.asOfDate
+        ? parseFinancialReportDate(req.query.asOfDate, "end")
+        : getSaudiEndOfDay();
+      if (!asOfDate) return res.status(400).json({ error: "تاريخ التقرير غير صالح" });
+      const branchId = getFinancialReportBranchId(req, req.query.branchId as string | undefined);
+      const balanceSheet = await ErpAccountingService.getBalanceSheet(tenantId, asOfDate, branchId);
       res.json({ success: true, balanceSheet });
     } catch (error: any) {
       res.status(500).json({ error: error.message || "Failed to fetch balance sheet" });
@@ -21274,10 +21303,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/erp/dashboard", requireAuth, requireManager, async (req: AuthRequest, res) => {
     try {
       const tenantId = getTenantIdFromRequest(req) || req.query.tenantId as string || process.env.TENANT_ID!;
-      const branchId = req.query.branchId as string;
-      const startDate = req.query.startDate ? new Date(req.query.startDate as string) : undefined;
-      const endDate = req.query.endDate ? new Date(req.query.endDate as string) : undefined;
-      const summary = await ErpAccountingService.getDashboardSummary(tenantId, branchId, startDate, endDate);
+      const branchId = getFinancialReportBranchId(req, req.query.branchId as string | undefined);
+      const startDate = req.query.startDate
+        ? parseFinancialReportDate(req.query.startDate, "start")
+        : undefined;
+      const endDate = req.query.endDate
+        ? parseFinancialReportDate(req.query.endDate, "end")
+        : undefined;
+      if ((req.query.startDate && !startDate) || (req.query.endDate && !endDate)) {
+        return res.status(400).json({ error: "تواريخ التقرير غير صالحة" });
+      }
+      if (startDate && endDate && startDate > endDate) {
+        return res.status(400).json({ error: "تاريخ البداية يجب أن يسبق تاريخ النهاية" });
+      }
+      const summary = await ErpAccountingService.getDashboardSummary(
+        tenantId,
+        branchId,
+        startDate || undefined,
+        endDate || undefined,
+      );
       res.json({ success: true, summary });
     } catch (error: any) {
       res.status(500).json({ error: error.message || "Failed to fetch dashboard summary" });
